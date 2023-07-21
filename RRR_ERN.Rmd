@@ -1,0 +1,3019 @@
+---
+title: "RRR_ERN_Results"
+output: 
+  html_document:
+        toc: true
+        toc_depth: 5
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+here::i_am("RRR_ERN.Rmd")
+
+library(here)
+library(tidyverse)
+library(brms)
+library(ez)
+library(lme4)
+library(lmerTest)
+library(sjPlot)
+library(sjmisc)
+library(sjlabelled)
+library(patchwork)
+
+
+
+
+load(here::here("rrr_ern_alldata.RData"))
+resp_gav <- read.csv(here::here("gavs_resp.csv"))
+stim_gav <- read.csv(here::here("gavs_stim.csv"))
+brm_fit <- readRDS(here::here("rrr_ern_mtmm_brm.rds"))
+
+
+
+df$race <- as.factor(df$race)
+df$ethnicity <- as.factor(df$ethnicity)
+
+atheme=theme_bw()+
+  theme(panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank(),
+        panel.border=element_blank(),
+        axis.line=element_line(),
+        text=element_text(family='Times', color = "black", size = 12),
+        axis.title.x = element_text(color = "black", size = 12),
+        axis.title.y = element_text(color = "black", size = 12),
+        axis.text.x = element_text(color = "black", size = 12),
+        axis.text.y = element_text(color = "black", size = 12),
+        legend.text = element_text(color = "black", size = 12))
+
+apa_ttest <- function(ttest_result) {
+  # Extract necessary values from t.test() result
+  estimate <- ttest_result$estimate
+  conf_int <- ttest_result$conf.int
+  t_val <- ttest_result$statistic
+  p_val <- ttest_result$p.value
+  df <- ttest_result$parameter[[1]]
+  
+  
+  if (p_val < .001) {
+    # Format output in APA style
+    output <- paste0(
+      "t(", df, ") = ", round(t_val, 2),
+      ", p < .001"
+    )
+  } else {
+    # Format output in APA style
+    output <- paste0(
+      "t(", df, ") = ", round(t_val, 2),
+      ", p = ", format(round(p_val,2), scientific = FALSE)
+    )
+  }
+  return(output)
+}
+
+corstars <-function(x, method=c("pearson", "spearman"), 
+                    removeTriangle=c("upper", "lower"),
+                    result=c("none", "html", "latex")){
+  #http://www.sthda.com/english/wiki/elegant-correlation-table-using-xtable-r-package  
+  
+  #Compute correlation matrix
+    x <- as.matrix(x)
+    correlation_matrix<-Hmisc::rcorr(x, type=method[1])
+    R <- correlation_matrix$r # Matrix of correlation coeficients
+    p <- correlation_matrix$P # Matrix of p-value 
+    
+    ## Define notions for significance levels; spacing is important.
+    mystars <- ifelse(p < .01, "**  ", ifelse(p < .05, "*   ", "    "))
+    
+    ## trunctuate the correlation matrix to two decimal
+    R <- format(round(cbind(rep(-1.11, ncol(x)), R), 2))[,-1]
+    
+    ## build a new matrix that includes the correlations with their apropriate stars
+    Rnew <- matrix(paste(R, mystars, sep=""), ncol=ncol(x))
+    diag(Rnew) <- paste(diag(R), " ", sep="")
+    rownames(Rnew) <- colnames(x)
+    colnames(Rnew) <- paste(colnames(x), "", sep="")
+    
+    ## remove upper triangle of correlation matrix
+    if(removeTriangle[1]=="upper"){
+      Rnew <- as.matrix(Rnew)
+      Rnew[upper.tri(Rnew, diag = TRUE)] <- ""
+      Rnew <- as.data.frame(Rnew)
+    }
+    
+    ## remove lower triangle of correlation matrix
+    else if(removeTriangle[1]=="lower"){
+      Rnew <- as.matrix(Rnew)
+      Rnew[lower.tri(Rnew, diag = TRUE)] <- ""
+      Rnew <- as.data.frame(Rnew)
+    }
+   
+
+} 
+
+
+corstars_conf <-function(x, method=c("pearson", "spearman"), 
+                    removeTriangle=c("upper", "lower"),
+                    result=c("none", "html", "latex")){
+  #http://www.sthda.com/english/wiki/elegant-correlation-table-using-xtable-r-package  
+  
+  #Compute correlation matrix
+    x <- as.matrix(x)
+    correlation_matrix<-Hmisc::rcorr(x, type=method[1])
+    R <- correlation_matrix$r # Matrix of correlation coefficients
+    
+    ## remove upper triangle of correlation matrix
+    if(removeTriangle[1]=="upper"){
+      R <- as.matrix(R)
+      R[upper.tri(R, diag = TRUE)] <- ""
+      R <- as.data.frame(R)
+    }
+    
+    ## remove lower triangle of correlation matrix
+    else if(removeTriangle[1]=="lower"){
+      R <- as.matrix(R)
+      R[lower.tri(R, diag = TRUE)] <- ""
+      R <- as.data.frame(R)
+    }
+   
+
+} 
+
+convert_to_ci <- function(R, n, level) {
+  ci_matrix <- data.frame(NA, nrow = ncol(R), ncol = ncol(R))
+  for (i in 1:nrow(R)) {
+    for (j in 1:ncol(R)) {
+      if (R[i, j] != "") {
+        if (i == j) {
+          ci_matrix[i, j] <- 1
+        } else {
+          ci <- psychometric::CIr(r = as.numeric(R[i, j]), 
+                                  n = n, 
+                                  level = level)
+          num_ll <- sub("^(-?)0+", "\\1", sprintf("%.2f",ci[1]))
+          num_ul <- sub("^(-?)0+", "\\1", sprintf("%.2f",ci[2]))
+          
+          ci_matrix[i, j] <- paste0("(",num_ll,", ",num_ul,")")
+
+        }
+      }
+      else {
+        ci_matrix[i, j] <- ""
+      }
+    }
+  }
+  dimnames(ci_matrix) <- dimnames(R)
+  return(ci_matrix)
+}
+
+pretty_cir_rep <- function(cor_in){
+  cir <- psychometric::CIr(cor_in, n = 43, level = .95)
+  return(sprintf("(%.2f, %.2f)",
+                 cir[1],
+                 cir[2]))
+}
+
+rms <- function(vec){
+  return(sqrt(sum(vec^2) / length(vec)))
+}
+
+bcor <- function(var1,var2){
+  var_diff <- var1 - var2
+  var_qt <- quantile(var_diff,c(.025,.975))
+  
+  if ((var_qt[1] > 0 & var_qt[2] > 0)|
+      (var_qt[1] < 0 & var_qt[2] < 0)) {
+    
+    return(sprintf("**(%.2f, %.2f)**",
+                   var_qt[1],
+                   var_qt[2]))
+  } else {
+    
+    return(sprintf("(%.2f, %.2f)",
+                   var_qt[1],
+                   var_qt[2]))
+    
+  }
+}
+
+
+
+papeR::labels(df,
+       which = c("asr_Intrnlzng","asr_Extrnlzng","asr_Attent","asr_Thought",
+                 "asr_Intrnlzng_T","asr_Extrnlzng_T","asr_Attent_T","asr_Thought_T")) <-
+         c("Internalizing Raw","Externalizing Raw",
+           "Attention Problems Raw","Thought Problems Raw",
+           "Internalizing T","Externalizing T",
+           "Attention Problems T","Thought Problems T")
+
+```
+
+
+
+# Participants
+
+Final sample size includes `r nrow(df)` participants (Women: `r length(df$subjid[df$gender == "Woman"])`, Men: `r length(df$subjid[df$gender == "Man"])`, Other: `r length(df$subjid[df$gender != "Man" & df$gender != "Woman"])`). `r sum(df$ethnicity == "Yes")` (`r round(sum(df$ethnicity == "Yes")/nrow(df),2)*100`%) participants were of a Hispanic, Latino, or Spanish origin. The average age of the sample was `r round(mean(df$age),0)` years (_SD_: `r round(sd(df$age),0)`, Range: `r min(df$age)` to `r max(df$age)`).
+
+
+
+``` {r demographics, echo=FALSE, warning=FALSE, results = "asis"}
+
+summarytools::freq(df$race, plain.ascii = FALSE, style = "rmarkdown",
+                   report.nas = FALSE, headings = FALSE,
+                   cumul = FALSE)
+
+```
+
+# GAVs
+
+## Response-Related ERPs
+
+Here are the grand average waveforms. They are shown separately for data from Brigham Young University (BYU) and University of South Florida (USF). The grand average of all participants is also shown (All).
+
+```{r GAVs_resp, echo=FALSE, warning=FALSE, results='asis'}
+
+
+colnames(resp_gav)[1] <- "Time"
+
+
+##organize for plotting
+df_ern_usf_flk <- resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         ern_usf_flk_cor:ern_usf_flk_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("ern_usf_flk_cor","ern_usf_flk_err","ern_usf_flk_dif"), 
+                        labels = c("Correct", "Error", "Difference")))
+
+df_ern_byu_flk <-  resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         ern_byu_flk_cor:ern_byu_flk_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("ern_byu_flk_cor","ern_byu_flk_err","ern_byu_flk_dif"), 
+                        labels = c("Correct", "Error", "Difference")))
+
+
+
+df_ern_all_flk <-  resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         ern_all_flk_cor:ern_all_flk_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("ern_all_flk_cor","ern_all_flk_err","ern_all_flk_dif"), 
+                        labels = c("Correct", "Error", "Difference")))
+
+
+
+all_ymin <- -8
+all_ymax <- 8
+
+usf_ern_gav_flk <- ggplot(data=df_ern_usf_flk, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 0, xmax = 100, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+byu_ern_gav_flk <- ggplot(data=df_ern_byu_flk, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 0, xmax = 100, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+all_ern_gav_flk <- ggplot(data=df_ern_all_flk, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 0, xmax = 100, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+df_ern_usf_str <- resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         ern_usf_str_cor:ern_usf_str_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("ern_usf_str_cor","ern_usf_str_err","ern_usf_str_dif"), 
+                        labels = c("Correct", "Error", "Difference")))
+
+df_ern_byu_str <-  resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         ern_byu_str_cor:ern_byu_str_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("ern_byu_str_cor","ern_byu_str_err","ern_byu_str_dif"), 
+                        labels = c("Correct", "Error", "Difference")))
+
+
+
+df_ern_all_str <-  resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         ern_all_str_cor:ern_all_str_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("ern_all_str_cor","ern_all_str_err","ern_all_str_dif"), 
+                        labels = c("Correct", "Error", "Difference")))
+
+
+
+all_ymin <- -8
+all_ymax <- 8
+
+
+usf_ern_gav_str <- ggplot(data=df_ern_usf_str, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 0, xmax = 100, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+byu_ern_gav_str <- ggplot(data=df_ern_byu_str, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 0, xmax = 100, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+all_ern_gav_str <- ggplot(data=df_ern_all_str, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 0, xmax = 100, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+df_ern_usf_gng <- resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         ern_usf_gng_cor:ern_usf_gng_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("ern_usf_gng_cor","ern_usf_gng_err","ern_usf_gng_dif"), 
+                        labels = c("Correct", "Error", "Difference")))
+
+df_ern_byu_gng <-  resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         ern_byu_gng_cor:ern_byu_gng_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("ern_byu_gng_cor","ern_byu_gng_err","ern_byu_gng_dif"), 
+                        labels = c("Correct", "Error", "Difference")))
+
+
+
+df_ern_all_gng <-  resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         ern_all_gng_cor:ern_all_gng_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("ern_all_gng_cor","ern_all_gng_err","ern_all_gng_dif"), 
+                        labels = c("Correct", "Error", "Difference")))
+
+
+
+all_ymin <- -8
+all_ymax <- 8
+
+
+usf_ern_gav_gng <- ggplot(data=df_ern_usf_gng, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 0, xmax = 100, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+byu_ern_gav_gng <- ggplot(data=df_ern_byu_gng, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 0, xmax = 100, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+all_ern_gav_gng <- ggplot(data=df_ern_all_gng, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 0, xmax = 100, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+df_ern_diffs <-  resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         c("ern_all_flk_dif","ern_all_str_dif","ern_all_gng_dif"), 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("ern_all_flk_dif","ern_all_str_dif","ern_all_gng_dif"), 
+                        labels = c("Flanker", "Stroop", "Go/NoGo")))
+
+
+ern_all_diffs <- ggplot(data=df_ern_diffs, 
+                    aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("black","black","black")) +
+  scale_linetype_manual(values=c("solid", "longdash", "twodash")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 0, xmax = 100, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+df_byu_ern_diffs <-  resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         c("ern_byu_flk_dif","ern_byu_str_dif","ern_byu_gng_dif"), 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("ern_byu_flk_dif","ern_byu_str_dif","ern_byu_gng_dif"), 
+                        labels = c("Flanker", "Stroop", "Go/NoGo")))
+
+
+ern_byu_diffs <- ggplot(data=df_byu_ern_diffs, 
+                    aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("black","black","black")) +
+  scale_linetype_manual(values=c("solid", "longdash", "twodash")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 0, xmax = 100, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+df_usf_ern_diffs <-  resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         c("ern_usf_flk_dif","ern_usf_str_dif","ern_usf_gng_dif"), 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("ern_usf_flk_dif","ern_usf_str_dif","ern_usf_gng_dif"), 
+                        labels = c("Flanker", "Stroop", "Go/NoGo")))
+
+
+ern_usf_diffs <- ggplot(data=df_usf_ern_diffs, 
+                    aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("black","black","black")) +
+  scale_linetype_manual(values=c("solid", "longdash", "twodash")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 0, xmax = 100, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+
+
+
+
+
+
+
+##organize for plotting
+df_pe_usf_flk <- resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         pe_usf_flk_cor:pe_usf_flk_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("pe_usf_flk_cor","pe_usf_flk_err","pe_usf_flk_dif"), 
+                        labels = c("Correct", "Error", "Difference")))
+
+df_pe_byu_flk <-  resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         pe_byu_flk_cor:pe_byu_flk_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("pe_byu_flk_cor","pe_byu_flk_err","pe_byu_flk_dif"), 
+                        labels = c("Correct", "Error", "Difference")))
+
+
+
+df_pe_all_flk <-  resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         pe_all_flk_cor:pe_all_flk_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("pe_all_flk_cor","pe_all_flk_err","pe_all_flk_dif"), 
+                        labels = c("Correct", "Error", "Difference")))
+
+
+
+all_ymin <- -8
+all_ymax <- 8
+
+usf_pe_gav_flk <- ggplot(data=df_pe_usf_flk, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 200, xmax = 400, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "pe", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+byu_pe_gav_flk <- ggplot(data=df_pe_byu_flk, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 200, xmax = 400, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "pe", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+all_pe_gav_flk <- ggplot(data=df_pe_all_flk, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 200, xmax = 400, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "pe", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+df_pe_usf_str <- resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         pe_usf_str_cor:pe_usf_str_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("pe_usf_str_cor","pe_usf_str_err","pe_usf_str_dif"), 
+                        labels = c("Correct", "Error", "Difference")))
+
+df_pe_byu_str <-  resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         pe_byu_str_cor:pe_byu_str_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("pe_byu_str_cor","pe_byu_str_err","pe_byu_str_dif"), 
+                        labels = c("Correct", "Error", "Difference")))
+
+
+
+df_pe_all_str <-  resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         pe_all_str_cor:pe_all_str_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("pe_all_str_cor","pe_all_str_err","pe_all_str_dif"), 
+                        labels = c("Correct", "Error", "Difference")))
+
+
+
+all_ymin <- -8
+all_ymax <- 8
+
+
+usf_pe_gav_str <- ggplot(data=df_pe_usf_str, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 200, xmax = 400, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "pe", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+byu_pe_gav_str <- ggplot(data=df_pe_byu_str, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 200, xmax = 400, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "pe", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+all_pe_gav_str <- ggplot(data=df_pe_all_str, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 200, xmax = 400, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "pe", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+df_pe_usf_gng <- resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         pe_usf_gng_cor:pe_usf_gng_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("pe_usf_gng_cor","pe_usf_gng_err","pe_usf_gng_dif"), 
+                        labels = c("Correct", "Error", "Difference")))
+
+df_pe_byu_gng <-  resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         pe_byu_gng_cor:pe_byu_gng_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("pe_byu_gng_cor","pe_byu_gng_err","pe_byu_gng_dif"), 
+                        labels = c("Correct", "Error", "Difference")))
+
+
+
+df_pe_all_gng <-  resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         pe_all_gng_cor:pe_all_gng_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("pe_all_gng_cor","pe_all_gng_err","pe_all_gng_dif"), 
+                        labels = c("Correct", "Error", "Difference")))
+
+
+
+all_ymin <- -8
+all_ymax <- 8
+
+
+usf_pe_gav_gng <- ggplot(data=df_pe_usf_gng, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 200, xmax = 400, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "pe", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+byu_pe_gav_gng <- ggplot(data=df_pe_byu_gng, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 200, xmax = 400, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "pe", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+all_pe_gav_gng <- ggplot(data=df_pe_all_gng, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 200, xmax = 400, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "pe", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+df_pe_diffs <-  resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         c("pe_all_flk_dif","pe_all_str_dif","pe_all_gng_dif"), 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("pe_all_flk_dif","pe_all_str_dif","pe_all_gng_dif"), 
+                        labels = c("Flanker", "Stroop", "Go/NoGo")))
+
+
+pe_all_diffs <- ggplot(data=df_pe_diffs, 
+                    aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("black","black","black")) +
+  scale_linetype_manual(values=c("solid", "longdash", "twodash")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 200, xmax = 400, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "pe", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+
+
+
+df_byu_pe_diffs <-  resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         c("pe_byu_flk_dif","pe_byu_str_dif","pe_byu_gng_dif"), 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("pe_byu_flk_dif","pe_byu_str_dif","pe_byu_gng_dif"), 
+                        labels = c("Flanker", "Stroop", "Go/NoGo")))
+
+
+pe_byu_diffs <- ggplot(data=df_byu_pe_diffs, 
+                    aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("black","black","black")) +
+  scale_linetype_manual(values=c("solid", "longdash", "twodash")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 200, xmax = 400, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "pe", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+
+df_usf_pe_diffs <-  resp_gav %>%
+  gather(key = event, 
+         value = meas, 
+         c("pe_usf_flk_dif","pe_usf_str_dif","pe_usf_gng_dif"), 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("pe_usf_flk_dif","pe_usf_str_dif","pe_usf_gng_dif"), 
+                        labels = c("Flanker", "Stroop", "Go/NoGo")))
+
+
+pe_usf_diffs <- ggplot(data=df_usf_pe_diffs, 
+                    aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("black","black","black")) +
+  scale_linetype_manual(values=c("solid", "longdash", "twodash")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-400, 800), breaks=(seq(-400,800,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 200, xmax = 400, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "pe", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+```
+
+### ERN
+
+#### BYU
+
+```{r byu_ern_plots, echo=FALSE, warning=FALSE, results='asis'}
+
+byu_ern_gav_flk + ggtitle("Flanker")
+
+byu_ern_gav_str + ggtitle("Stroop")
+
+byu_ern_gav_gng + ggtitle("Go/NoGo")
+
+ern_byu_diffs + ggtitle("Difference Waveforms")
+
+```
+
+#### USF
+
+```{r usf_ern_plots, echo=FALSE, warning=FALSE, results='asis'}
+
+usf_ern_gav_flk + ggtitle("Flanker")
+
+usf_ern_gav_str + ggtitle("Stroop")
+
+usf_ern_gav_gng + ggtitle("Go/NoGo")
+
+ern_usf_diffs + ggtitle("Difference Waveforms")
+
+```
+
+#### All
+
+```{r all_ern_plots, echo=FALSE, warning=FALSE, results='asis'}
+
+all_ern_gav_flk + ggtitle("Flanker")
+
+all_ern_gav_str + ggtitle("Stroop")
+
+all_ern_gav_gng + ggtitle("Go/NoGo")
+
+ern_all_diffs + ggtitle("Difference Waveforms")
+
+```
+
+### Pe
+
+#### BYU
+
+```{r byu_pe_plots, echo=FALSE, warning=FALSE, results='asis'}
+
+byu_pe_gav_flk + ggtitle("Flanker")
+
+byu_pe_gav_str + ggtitle("Stroop")
+
+byu_pe_gav_gng + ggtitle("Go/NoGo")
+
+pe_byu_diffs + ggtitle("Difference Waveforms")
+
+```
+
+#### USF
+
+```{r usf_pe_plots, echo=FALSE, warning=FALSE, results='asis'}
+
+usf_pe_gav_flk + ggtitle("Flanker")
+
+usf_pe_gav_str + ggtitle("Stroop")
+
+usf_pe_gav_gng + ggtitle("Go/NoGo")
+
+pe_usf_diffs + ggtitle("Difference Waveforms")
+
+```
+
+#### All
+
+```{r all_pe_plots, echo=FALSE, warning=FALSE, results='asis'}
+
+all_pe_gav_flk + ggtitle("Flanker")
+
+all_pe_gav_str + ggtitle("Stroop")
+
+all_pe_gav_gng + ggtitle("Go/NoGo")
+
+pe_all_diffs + ggtitle("Difference Waveforms")
+
+```
+
+
+```{r GAVs_stim, echo=FALSE, warning=FALSE, results='asis'}
+
+
+colnames(stim_gav)[1] <- "Time"
+
+flk_n1_wind <- c(90, 130)
+flk_n2_wind <- c(240, 300)
+
+str_n1_wind <- c(90, 120)
+str_n2_wind <- c(240, 300)
+
+gng_n1_wind <- c(100, 130)
+gng_n2_wind <- c(240, 300)
+
+
+##organize for plotting
+df_n1_usf_flk <- stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         n1_usf_flk_con:n1_usf_flk_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n1_usf_flk_con","n1_usf_flk_inc","n1_usf_flk_dif"), 
+                        labels = c("Congruent", "Incongruent", "Difference")))
+
+df_n1_byu_flk <- stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         n1_byu_flk_con:n1_byu_flk_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n1_byu_flk_con","n1_byu_flk_inc","n1_byu_flk_dif"), 
+                        labels = c("Congruent", "Incongruent", "Difference")))
+
+df_n1_all_flk <- stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         n1_all_flk_con:n1_all_flk_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n1_all_flk_con","n1_all_flk_inc","n1_all_flk_dif"), 
+                        labels = c("Congruent", "Incongruent", "Difference")))
+
+
+
+all_ymin <- -6
+all_ymax <- 6
+
+usf_n1_gav_flk <- ggplot(data=df_n1_usf_flk, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = flk_n1_wind[1], xmax = flk_n1_wind[2], 
+           ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+byu_n1_gav_flk <- ggplot(data=df_n1_byu_flk, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = flk_n1_wind[1], xmax = flk_n1_wind[2], 
+           ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+all_n1_gav_flk <- ggplot(data=df_n1_all_flk, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = flk_n1_wind[1], xmax = flk_n1_wind[2], 
+           ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+df_n1_usf_str <- stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         n1_usf_str_con:n1_usf_str_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n1_usf_str_con","n1_usf_str_inc",
+                                   "n1_usf_str_neu","n1_usf_str_dif"), 
+                        labels = c("Congruent", "Incongruent", "Neutral", "Difference")))
+
+df_n1_byu_str <- stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         n1_byu_str_con:n1_byu_str_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n1_byu_str_con","n1_byu_str_inc",
+                                   "n1_byu_str_neu","n1_byu_str_dif"), 
+                        labels = c("Congruent", "Incongruent", "Neutral", "Difference")))
+
+df_n1_all_str <-stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         n1_all_str_con:n1_all_str_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n1_all_str_con","n1_all_str_inc",
+                                   "n1_all_str_neu","n1_all_str_dif"), 
+                        labels = c("Congruent", "Incongruent", "Neutral", "Difference")))
+
+
+
+all_ymin <- -6
+all_ymax <- 6
+
+usf_n1_gav_str <- ggplot(data=df_n1_usf_str, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","darkgreen","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = str_n1_wind[1], xmax = str_n1_wind[2], 
+           ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+byu_n1_gav_str <- ggplot(data=df_n1_byu_str, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","darkgreen","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = str_n1_wind[1], xmax = str_n1_wind[2], 
+           ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+all_n1_gav_str <- ggplot(data=df_n1_all_str, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","darkgreen","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = str_n1_wind[1], xmax = str_n1_wind[2], 
+           ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+df_n1_usf_gng <- stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         n1_usf_gng_go:n1_usf_gng_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n1_usf_gng_go","n1_usf_gng_ng","n1_usf_gng_dif"), 
+                        labels = c("Go", "NoGo", "Difference")))
+
+df_n1_byu_gng <- stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         n1_byu_gng_go:n1_byu_gng_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n1_byu_gng_go","n1_byu_gng_ng","n1_byu_gng_dif"), 
+                        labels = c("Go", "NoGo", "Difference")))
+
+df_n1_all_gng <-stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         n1_all_gng_go:n1_all_gng_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n1_all_gng_go","n1_all_gng_ng","n1_all_gng_dif"), 
+                        labels = c("Go", "NoGo", "Difference")))
+
+
+
+all_ymin <- -6
+all_ymax <- 6
+
+usf_n1_gav_gng <- ggplot(data=df_n1_usf_gng, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = gng_n1_wind[1], xmax = gng_n1_wind[2], 
+           ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+byu_n1_gav_gng <- ggplot(data=df_n1_byu_gng, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = gng_n1_wind[1], xmax = gng_n1_wind[2], 
+           ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+all_n1_gav_gng <- ggplot(data=df_n1_all_gng, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = gng_n1_wind[1], xmax = gng_n1_wind[2], 
+           ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+df_n1_diffs <-  stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         c("n1_all_flk_dif","n1_all_str_dif","n1_all_gng_dif"), 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n1_all_flk_dif","n1_all_str_dif","n1_all_gng_dif"), 
+                        labels = c("Flanker", "Stroop", "Go/NoGo")))
+
+
+n1_all_diffs <- ggplot(data=df_n1_diffs, 
+                    aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("black","black","black")) +
+  scale_linetype_manual(values=c("solid", "longdash", "twodash")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 90, xmax = 130, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+
+
+df_byu_n1_diffs <-  stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         c("n1_byu_flk_dif","n1_byu_str_dif","n1_byu_gng_dif"), 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n1_byu_flk_dif","n1_byu_str_dif","n1_byu_gng_dif"), 
+                        labels = c("Flanker", "Stroop", "Go/NoGo")))
+
+
+n1_byu_diffs <- ggplot(data=df_byu_n1_diffs, 
+                    aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("black","black","black")) +
+  scale_linetype_manual(values=c("solid", "longdash", "twodash")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 90, xmax = 130, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+
+
+df_usf_n1_diffs <-  stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         c("n1_usf_flk_dif","n1_usf_str_dif","n1_usf_gng_dif"), 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n1_usf_flk_dif","n1_usf_str_dif","n1_usf_gng_dif"), 
+                        labels = c("Flanker", "Stroop", "Go/NoGo")))
+
+
+n1_usf_diffs <- ggplot(data=df_usf_n1_diffs, 
+                    aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("black","black","black")) +
+  scale_linetype_manual(values=c("solid", "longdash", "twodash")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 90, xmax = 130, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+
+
+
+##organize for plotting
+df_n2_usf_flk <- stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         n2_usf_flk_con:n2_usf_flk_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n2_usf_flk_con","n2_usf_flk_inc","n2_usf_flk_dif"), 
+                        labels = c("Congruent", "Incongruent", "Difference")))
+
+df_n2_byu_flk <- stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         n2_byu_flk_con:n2_byu_flk_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n2_byu_flk_con","n2_byu_flk_inc","n2_byu_flk_dif"), 
+                        labels = c("Congruent", "Incongruent", "Difference")))
+
+df_n2_all_flk <- stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         n2_all_flk_con:n2_all_flk_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n2_all_flk_con","n2_all_flk_inc","n2_all_flk_dif"), 
+                        labels = c("Congruent", "Incongruent", "Difference")))
+
+
+
+all_ymin <- -6
+all_ymax <- 6
+
+usf_n2_gav_flk <- ggplot(data=df_n2_usf_flk, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = flk_n2_wind[1], xmax = flk_n2_wind[2], 
+           ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+byu_n2_gav_flk <- ggplot(data=df_n2_byu_flk, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = flk_n2_wind[1], xmax = flk_n2_wind[2], 
+           ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+all_n2_gav_flk <- ggplot(data=df_n2_all_flk, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = flk_n2_wind[1], xmax = flk_n2_wind[2], 
+           ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+df_n2_usf_str <- stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         n2_usf_str_con:n2_usf_str_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n2_usf_str_con","n2_usf_str_inc",
+                                   "n2_usf_str_neu","n2_usf_str_dif"), 
+                        labels = c("Congruent", "Incongruent", "Neutral", "Difference")))
+
+df_n2_byu_str <- stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         n2_byu_str_con:n2_byu_str_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n2_byu_str_con","n2_byu_str_inc",
+                                   "n2_byu_str_neu","n2_byu_str_dif"), 
+                        labels = c("Congruent", "Incongruent", "Neutral", "Difference")))
+
+df_n2_all_str <-stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         n2_all_str_con:n2_all_str_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n2_all_str_con","n2_all_str_inc",
+                                   "n2_all_str_neu","n2_all_str_dif"), 
+                        labels = c("Congruent", "Incongruent", "Neutral", "Difference")))
+
+
+
+all_ymin <- -6
+all_ymax <- 6
+
+usf_n2_gav_str <- ggplot(data=df_n2_usf_str, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","darkgreen","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = str_n2_wind[1], xmax = str_n2_wind[2], 
+           ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+byu_n2_gav_str <- ggplot(data=df_n2_byu_str, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","darkgreen","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = str_n2_wind[1], xmax = str_n2_wind[2], 
+           ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+all_n2_gav_str <- ggplot(data=df_n2_all_str, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","darkgreen","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = str_n2_wind[1], xmax = str_n2_wind[2], 
+           ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+df_n2_usf_gng <- stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         n2_usf_gng_go:n2_usf_gng_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n2_usf_gng_go","n2_usf_gng_ng","n2_usf_gng_dif"), 
+                        labels = c("Go", "NoGo", "Difference")))
+
+df_n2_byu_gng <- stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         n2_byu_gng_go:n2_byu_gng_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n2_byu_gng_go","n2_byu_gng_ng","n2_byu_gng_dif"), 
+                        labels = c("Go", "NoGo", "Difference")))
+
+df_n2_all_gng <-stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         n2_all_gng_go:n2_all_gng_dif, 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n2_all_gng_go","n2_all_gng_ng","n2_all_gng_dif"), 
+                        labels = c("Go", "NoGo", "Difference")))
+
+
+
+all_ymin <- -6
+all_ymax <- 6
+
+usf_n2_gav_gng <- ggplot(data=df_n2_usf_gng, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = gng_n2_wind[1], xmax = gng_n2_wind[2], 
+           ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+byu_n2_gav_gng <- ggplot(data=df_n2_byu_gng, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = gng_n2_wind[1], xmax = gng_n2_wind[2], 
+           ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+all_n2_gav_gng <- ggplot(data=df_n2_all_gng, 
+                          aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("blue","red","black")) +
+  scale_linetype_manual(values=c("solid", "solid", "solid")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = gng_n2_wind[1], xmax = gng_n2_wind[2], 
+           ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+df_n2_diffs <-  stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         c("n2_all_flk_dif","n2_all_str_dif","n2_all_gng_dif"), 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n2_all_flk_dif","n2_all_str_dif","n2_all_gng_dif"), 
+                        labels = c("Flanker", "Stroop", "Go/NoGo")))
+
+
+n2_all_diffs <- ggplot(data=df_n2_diffs, 
+                    aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("black","black","black")) +
+  scale_linetype_manual(values=c("solid", "longdash", "twodash")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 240, xmax = 300, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+
+df_byu_n2_diffs <-  stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         c("n2_byu_flk_dif","n2_byu_str_dif","n2_byu_gng_dif"), 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n2_byu_flk_dif","n2_byu_str_dif","n2_byu_gng_dif"), 
+                        labels = c("Flanker", "Stroop", "Go/NoGo")))
+
+
+n2_byu_diffs <- ggplot(data=df_byu_n2_diffs, 
+                    aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("black","black","black")) +
+  scale_linetype_manual(values=c("solid", "longdash", "twodash")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 240, xmax = 300, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+
+
+df_usf_n2_diffs <-  stim_gav %>%
+  gather(key = event, 
+         value = meas, 
+         c("n2_usf_flk_dif","n2_usf_str_dif","n2_usf_gng_dif"), 
+         factor_key = TRUE) %>%
+  mutate(event = factor(event, 
+                        levels = c("n2_usf_flk_dif","n2_usf_str_dif","n2_usf_gng_dif"), 
+                        labels = c("Flanker", "Stroop", "Go/NoGo")))
+
+
+n2_usf_diffs <- ggplot(data=df_usf_n2_diffs, 
+                    aes(x=Time, y=meas, group = event, color = event)) +
+  geom_line(aes(linetype = event, color = event)) +
+  scale_color_manual(values=c("black","black","black")) +
+  scale_linetype_manual(values=c("solid", "longdash", "twodash")) +
+  scale_x_continuous(name="Time (ms)", limits=c(-200, 600), breaks=(seq(-200,600,200)),
+                     expand = c(0,0)) +
+  scale_y_continuous(name=expression("Amplitude ("*mu*"V)"), limits=c(all_ymin, all_ymax),
+                     breaks=(seq(all_ymin,all_ymax,4)), expand = c(0,0)) +
+  annotate("rect", xmin = 240, xmax = 300, ymin = all_ymin, ymax = all_ymax, alpha = .2) +
+  #annotate("text", x = 50, y = 5.5, label = "ERN", family = 'Times') +
+  atheme +
+  theme(#legend.position="none",
+        legend.title=element_blank())
+
+
+
+
+
+```
+
+## Stimulus-Related ERPs
+
+### N1
+
+#### BYU
+
+```{r byu_n1_plots, echo=FALSE, warning=FALSE, results='asis'}
+
+byu_n1_gav_flk + ggtitle("Flanker")
+
+byu_n1_gav_str + ggtitle("Stroop")
+
+byu_n1_gav_gng + ggtitle("Go/NoGo")
+
+n1_byu_diffs + ggtitle("Difference Waveforms")
+
+```
+
+#### USF
+
+```{r usf_n1_plots, echo=FALSE, warning=FALSE, results='asis'}
+
+usf_n1_gav_flk + ggtitle("Flanker")
+
+usf_n1_gav_str + ggtitle("Stroop")
+
+usf_n1_gav_gng + ggtitle("Go/NoGo")
+
+n1_usf_diffs + ggtitle("Difference Waveforms")
+
+```
+
+#### All
+
+```{r all_n1_plots, echo=FALSE, warning=FALSE, results='asis'}
+
+all_n1_gav_flk + ggtitle("Flanker")
+
+all_n1_gav_str + ggtitle("Stroop")
+
+all_n1_gav_gng + ggtitle("Go/NoGo")
+
+n1_all_diffs + ggtitle("Difference Waveforms")
+
+```
+
+### N2
+
+#### BYU
+
+```{r byu_n2_plots, echo=FALSE, warning=FALSE, results='asis'}
+
+byu_n2_gav_flk + ggtitle("Flanker")
+
+byu_n2_gav_str + ggtitle("Stroop")
+
+byu_n2_gav_gng + ggtitle("Go/NoGo")
+
+n2_byu_diffs + ggtitle("Difference Waveforms")
+
+```
+
+#### USF
+
+```{r usf_n2_plots, echo=FALSE, warning=FALSE, results='asis'}
+
+usf_n2_gav_flk + ggtitle("Flanker")
+
+usf_n2_gav_str + ggtitle("Stroop")
+
+usf_n2_gav_gng + ggtitle("Go/NoGo")
+
+n2_usf_diffs + ggtitle("Difference Waveforms")
+
+```
+
+#### All
+
+```{r all_n2_plots, echo=FALSE, warning=FALSE, results='asis'}
+
+all_n2_gav_flk + ggtitle("Flanker")
+
+all_n2_gav_str + ggtitle("Stroop")
+
+all_n2_gav_gng + ggtitle("Go/NoGo")
+
+n2_all_diffs + ggtitle("Difference Waveforms")
+
+```
+
+
+# Results
+
+## Manipulation Check
+
+A 2-Event x 3-Task repeated measures ANOVA was used to verify that the tasks successfully elicited ERNs.
+
+```{r manipulation_check, echo=FALSE, warning=FALSE, results='asis'}
+
+df_ern_long <- df %>%
+  select(subjid, 
+         flk_ern_cor, flk_ern_err,
+         gng_ern_cor, gng_ern_err,
+         str_ern_cor, str_ern_err) %>%
+  pivot_longer(
+    cols = flk_ern_cor:str_ern_err, 
+    names_to = c("task","event"), 
+    names_pattern = "(.*)_ern_(.*)",
+    values_to = "erp")
+  
+
+ern_anova <- ezANOVA(
+  data = df_ern_long, 
+  dv = erp, 
+  wid = subjid, 
+  within = .(task, event),
+  type = 3,
+  detailed = TRUE,
+  return_aov = TRUE)
+
+ern_anova <- psychReport::aovEffectSize(ern_anova, effectSize = "pes")
+
+ern_anova$ANOVA$p[2] <- ern_anova$`Sphericity Corrections`$`p[GG]`[1]
+ern_anova$ANOVA$`p<.05`[2] <- ern_anova$`Sphericity Corrections`$`p[GG]<.05`[1]
+ern_anova$ANOVA$p[4] <- ern_anova$`Sphericity Corrections`$`p[GG]`[2]
+ern_anova$ANOVA$`p<.05`[4] <- ern_anova$`Sphericity Corrections`$`p[GG]<.05`[2]
+
+ern_anova$ANOVA$Effect[2] <- "Task"
+ern_anova$ANOVA$Effect[3] <- "Event"
+ern_anova$ANOVA$Effect[4] <- "Task x Event"
+
+ern_anova$ANOVA[ern_anova$ANOVA$Effect != "(Intercept)",
+                c("Effect", "DFn", "DFd", "F", "p", "p<.05", "pes")] %>% 
+  mutate_if(is.numeric, format, digits = 3) %>%
+  kableExtra::kable() %>% 
+  kableExtra::kable_styling(bootstrap_options = c("striped"))
+
+ttest_ern_flk <- t.test(erp ~ event,
+                      data = df_ern_long[df_ern_long$task == "flk",],
+                      paired = TRUE)
+
+ttest_ern_str <- t.test(erp ~ event,
+                    data = df_ern_long[df_ern_long$task == "str",],
+                    paired = TRUE)
+
+ttest_ern_gng <- t.test(erp ~ event,
+                    data = df_ern_long[df_ern_long$task == "gng",],
+                    paired = TRUE)
+
+df_temp <- df %>%
+  rowwise() %>%
+  mutate(flkerp = mean(flk_ern_err,flk_ern_cor),
+         strerp = mean(str_ern_err,str_ern_cor),
+         gngerp = mean(gng_ern_err,gng_ern_cor))
+
+ttest_flk_str <- t.test(df_temp$flkerp,
+                        df_temp$strerp,
+                        paired = TRUE)
+
+ttest_flk_gng <- t.test(df_temp$flkerp,
+                        df_temp$gngerp,
+                        paired = TRUE)
+
+ttest_str_gng <- t.test(df_temp$strerp,
+                        df_temp$gngerp,
+                        paired = TRUE)
+```
+
+pes = partial eta-squared, and Greenhouse Geisser correction was applied for the effects involving task.
+
+There are main effects of event and task. Error trials show larger amplitude than correct trials.
+
+- Flanker: `r apa_ttest(ttest_ern_flk)`
+- Stroop: `r apa_ttest(ttest_ern_str)`
+- Go/NoGo: `r apa_ttest(ttest_ern_gng)`
+
+For the overall main effect of task, flanker trials showed smaller overall amplitude than either Stroop,`r apa_ttest(ttest_flk_str)`, or go/nogo tasks,`r apa_ttest(ttest_flk_gng)`. There were no differences in overall amplitude between Stroop and go/nogo tasks,`r apa_ttest(ttest_str_gng)`.
+
+
+Manipulation check was successfully passed!
+
+## Psychometric Internal Consistency/Data Quality
+
+```{r psychometrics_table, echo=FALSE, warning=FALSE, results='asis'}
+
+reltable <- read.csv(here::here("ReliabilityTable.csv"))
+
+colnames(reltable) <- c("","","","Group-Level Reliability",
+                        "Subject-Level Reliability", "SME")
+
+options(knitr.kable.NA = '')
+
+kableExtra::kable(reltable) %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped"))
+```
+
+_Note_: difference activity for N1 and N2 during Stroop is the incongruent minus congruent activity.
+
+
+## Aim 1a (Direct Replication)
+
+### Error-Trial MTMM Matrix
+
+```{r aim1a_mtmm_matrix_error, echo=FALSE, warning=FALSE, results='asis', message=FALSE}
+
+#colnames(df)[c(44:61,75:95)]
+
+mat_err <- corstars(df[,c(
+  "flk_ern_err","flk_pe_err","flk_n2_inc","flk_n1_inc",
+  "str_ern_err","str_pe_err","str_n2_inc","str_n1_inc",
+  "gng_ern_err","gng_pe_err","gng_n2_ng","gng_n1_ng")],
+  method = "pearson",
+  removeTriangle = "upper"
+)
+
+
+erp_sh <- erp_onlysngtrl[grepl("err|inc|_ng_", erp_onlysngtrl$cell),] %>%
+  group_by(subjid, cell) %>%
+  mutate(row = ifelse(row_number() %% 2 == 0, 2, 1)) %>%
+  group_by(row, .add = TRUE) %>%
+  summarise(erp_mean = mean(erp)) %>%
+  pivot_wider(names_from = row, values_from = erp_mean, names_prefix = "erp_mean_") %>%
+  ungroup() %>%
+  select(subjid, cell, erp_mean_1, erp_mean_2) %>%
+  group_by(cell) %>%
+  summarise(corr = cor(erp_mean_1, erp_mean_2)) %>%
+  rowwise() %>%
+  mutate(corr_conf_ll = psychometric::CIr(corr, n = 182, level = .95)[1],
+         corr_conf_ul = psychometric::CIr(corr, n = 182, level = .95)[2])
+
+for (ii in seq_len(nrow(erp_sh))) {
+  rowname <- erp_sh$cell[ii]
+  value <- erp_sh$corr
+  
+  new_string <- strsplit(rowname,"_")[[1]]
+  new_string <- paste(c(new_string[1],new_string[3],new_string[2]), 
+                      collapse = "_")
+  
+  row_idx <- which(row.names(mat_err) == new_string)
+  col_idx <- which(colnames(mat_err) == new_string)
+  mat_err[row_idx, col_idx] <- sub("^(-?)0+", "\\1", sprintf("%.2f",value[ii]))
+}
+
+mat_err <- apply(mat_err, MARGIN = c(1, 2), FUN = trimws)
+mat_err <- apply(mat_err, 2, function(x) sub("^(-?)0+", "\\1", x))
+
+# mat_err %>%
+#   write.csv(file = "aim1_pt_err.csv")
+
+for (irow in 1:nrow(mat_err)) {
+  for(icol in 1:ncol(mat_err)){
+    rname <- row.names(mat_err)[irow]
+    cname <- colnames(mat_err)[icol]
+    
+    rowstring <- strsplit(rname, "_") [[1]]
+    colstring <- strsplit(cname, "_") [[1]]
+    
+    if (rowstring[2] == colstring[2] & 
+        rowstring[1] == colstring[1]){
+      mat_err[irow,icol] <- kableExtra::cell_spec(mat_err[irow,icol],"html",color = "black")
+    }
+    
+    if (rowstring[2] == colstring[2] & 
+        rowstring[1] != colstring[1]){
+      mat_err[irow,icol] <- kableExtra::cell_spec(mat_err[irow,icol],"html",color = "red")
+    }
+    
+    if (rowstring[2] != colstring[2] & 
+        rowstring[1] == colstring[1]){
+      mat_err[irow,icol] <- kableExtra::cell_spec(mat_err[irow,icol],"html",color = "blue")
+    }
+    
+    if (rowstring[2] != colstring[2] & 
+        rowstring[1] != colstring[1]){
+      mat_err[irow,icol] <- kableExtra::cell_spec(mat_err[irow,icol],"html",color = "gray")
+    }
+    
+  }
+}
+
+task_col <- c("Flanker",rep("",3),
+              "Stroop",rep("",3),
+              "Go/NoGo",rep("",3))
+event_col <- c("ERN", "Pe", "N2", "N1",
+               "ERN", "Pe", "N2", "N1",
+               "ERN", "Pe", "N2", "N1")
+
+mat_err <- cbind(task_col,event_col,mat_err)
+rownames(mat_err) <- NULL
+colnames(mat_err) <- c("","","ERN", "Pe", "N2", "N1",
+                       "ERN", "Pe", "N2", "N1",
+                       "ERN", "Pe", "N2", "N1")
+
+mat_err %>%
+  kableExtra::kable(.,'html',escape = FALSE) %>% 
+  kableExtra::kable_styling(
+    bootstrap_options = c("striped")) %>%
+  kableExtra::add_header_above(c("","","Flanker" = 4, "Stroop" = 4, "Go/NoGo" = 4)) %>%
+  kableExtra::collapse_rows(valign = "middle") 
+
+
+
+
+#confidence interval table
+
+
+mat_err_ci <- corstars_conf(df[,c(
+  "flk_ern_err","flk_pe_err","flk_n2_inc","flk_n1_inc",
+  "str_ern_err","str_pe_err","str_n2_inc","str_n1_inc",
+  "gng_ern_err","gng_pe_err","gng_n2_ng","gng_n1_ng")],
+  method = "pearson",
+  removeTriangle = "upper"
+)
+
+mat_err_ci <- convert_to_ci(mat_err_ci, n = 182, level = 0.95)
+
+
+for (ii in seq_len(nrow(erp_sh))) {
+  rowname <- erp_sh$cell[ii]
+  
+  new_string <- strsplit(rowname,"_")[[1]]
+  new_string <- paste(c(new_string[1],new_string[3],new_string[2]), 
+                      collapse = "_")
+  
+  row_idx <- which(row.names(mat_err_ci) == new_string)
+  col_idx <- which(colnames(mat_err_ci) == new_string)
+  
+  num_ll <- sub("^(-?)0+", "\\1", sprintf("%.2f",erp_sh$corr_conf_ll[ii]))
+  num_ul <- sub("^(-?)0+", "\\1", sprintf("%.2f",erp_sh$corr_conf_ul[ii]))
+  
+  ci_out <- paste0("(",num_ll,", ",num_ul,")")
+  mat_err_ci[row_idx, col_idx] <- ci_out
+  # mat_err_ci[row_idx, col_idx] <- sub("^(-?)0+", "\\1",sprintf("(%.2f, %.2f)",
+  #                                         erp_sh$corr_conf_ll[ii],
+  #                                         erp_sh$corr_conf_ul[ii]))
+}
+
+# mat_err_ci <- apply(mat_err_ci, MARGIN = c(1, 2), FUN = trimws)
+# mat_err_ci <- apply(mat_err_ci, 2, function(x) sub("^(-?)0+", "\\1", x))
+
+
+# mat_err_ci %>%
+#   write.csv(file = "aim1_ci_err.csv",
+#             row.names = F)
+
+for (irow in 1:nrow(mat_err_ci)) {
+  for(icol in 1:ncol(mat_err_ci)){
+    rname <- row.names(mat_err_ci)[irow]
+    cname <- colnames(mat_err_ci)[icol]
+    
+    rowstring <- strsplit(rname, "_") [[1]]
+    colstring <- strsplit(cname, "_") [[1]]
+    
+    if (rowstring[2] == colstring[2] & 
+        rowstring[1] == colstring[1]){
+      mat_err_ci[irow,icol] <- kableExtra::cell_spec(mat_err_ci[irow,icol],"html",color = "black")
+    }
+    
+    if (rowstring[2] == colstring[2] & 
+        rowstring[1] != colstring[1]){
+      mat_err_ci[irow,icol] <- kableExtra::cell_spec(mat_err_ci[irow,icol],"html",color = "red")
+    }
+    
+    if (rowstring[2] != colstring[2] & 
+        rowstring[1] == colstring[1]){
+      mat_err_ci[irow,icol] <- kableExtra::cell_spec(mat_err_ci[irow,icol],"html",color = "blue")
+    }
+    
+    if (rowstring[2] != colstring[2] & 
+        rowstring[1] != colstring[1]){
+      mat_err_ci[irow,icol] <- kableExtra::cell_spec(mat_err_ci[irow,icol],"html",color = "gray")
+    }
+    
+  }
+}
+
+task_col <- c("Flanker",rep("",3),
+              "Stroop",rep("",3),
+              "Go/NoGo",rep("",3))
+event_col <- c("ERN", "Pe", "N2", "N1",
+               "ERN", "Pe", "N2", "N1",
+               "ERN", "Pe", "N2", "N1")
+
+mat_err_ci <- cbind(task_col,event_col,mat_err_ci)
+rownames(mat_err_ci) <- NULL
+colnames(mat_err_ci) <- c("","","ERN", "Pe", "N2", "N1",
+                       "ERN", "Pe", "N2", "N1",
+                       "ERN", "Pe", "N2", "N1")
+
+mat_err_ci %>%
+  kableExtra::kable(.,'html',escape = FALSE) %>% 
+  kableExtra::kable_styling(
+    bootstrap_options = c("striped")) %>%
+  kableExtra::add_header_above(c("","","Flanker" = 4, "Stroop" = 4, "Go/NoGo" = 4)) %>%
+  kableExtra::collapse_rows(valign = "middle") 
+
+
+
+
+
+
+```
+
+#### Riesel et al. Paper Findings
+
+|          |    |Flanker |        |  Stroop |       |  Go/NoGo |       |
+| :---     |:---|:----:  |  :---: | :----:   |  :---: |    :----:   |  :---: |
+|          |    | ERN     |   Pe   |  ERN    |   Pe  |  ERN     |   Pe  |
+| Flanker  |ERN | `r pretty_cir_rep(.81)`      |   |   |   |   |   |   |
+|          |Pe  | <span style="color: blue;">`r pretty_cir_rep(.37)` </span>    | `r pretty_cir_rep(.87)`     |   |   |   |   |
+| Stroop  |ERN  | <span style="color: red;">  `r pretty_cir_rep(.37)` </span>   | <span style="color: gray;">`r pretty_cir_rep(.28)` </span> | `r pretty_cir_rep(.69)`  |   |   |   |   |
+|          |Pe  | <span style="color: gray;"> `r pretty_cir_rep(-.03)`  </span>    | <span style="color: red;">`r pretty_cir_rep(.41)`  </span>  | <span style="color: blue;">`r pretty_cir_rep(.39)` </span> | `r pretty_cir_rep(.58)`  |   |   |
+| Go/NoGo  |ERN  | <span style="color: red;">  `r pretty_cir_rep(.43)` </span>  | <span style="color: gray;">`r pretty_cir_rep(.10)` </span>  | <span style="color: red;">`r pretty_cir_rep(.33)` </span>  | <span style="color: gray;"> `r pretty_cir_rep(.11)` </span> | `r pretty_cir_rep(.60)`  |   |   |
+|          |Pe  | <span style="color: gray;">`r pretty_cir_rep(.12)` </span>    | <span style="color: red;">`r pretty_cir_rep(.49)` </span>   | <span style="color: gray;">`r pretty_cir_rep(.10)`</span>  | <span style="color: red;">`r pretty_cir_rep(.37)` </span> | <span style="color: blue;"> `r pretty_cir_rep(.58)` </span>  | `r pretty_cir_rep(.73)`  |
+|          |    |   |        |      |       |   |       |
+
+
+
+### Difference-Score MTMM Matrix
+
+```{r aim1a_mtmm_matrix_dif, echo=FALSE, warning=FALSE, results='asis', message=FALSE}
+
+
+mat_dif <- corstars(df[,c(
+  "flk_ern_dif","flk_pe_dif","flk_n2_dif","flk_n1_dif",
+  "str_ern_dif","str_pe_dif","str_n2_dif","str_n1_dif",
+  "gng_ern_dif","gng_pe_dif","gng_n2_dif","gng_n1_dif")],
+  method = "pearson",
+  removeTriangle = "upper"
+)
+
+erp_sh_dif <- erp_onlysngtrl[grepl("err|cor|inc|con|go|_ng_", erp_onlysngtrl$cell),] %>%
+  group_by(subjid, cell) %>%
+  mutate(row = ifelse(row_number() %% 2 == 0, 2, 1)) %>%
+  group_by(row, .add = TRUE) %>%
+  summarise(erp_mean = mean(erp)) %>%
+  pivot_wider(names_from = c(cell,row), 
+              values_from = erp_mean) %>%
+  group_by(subjid) %>%
+  mutate(
+    flk_dif_n1_1 = flk_inc_n1_1 - flk_con_n1_1,
+    flk_dif_n1_2 = flk_inc_n1_2 - flk_con_n1_2,
+    flk_dif_n2_1 = flk_inc_n2_1 - flk_con_n2_1,
+    flk_dif_n2_2 = flk_inc_n2_2 - flk_con_n2_2,
+    flk_dif_ern_1 = flk_err_ern_1 - flk_cor_ern_1,
+    flk_dif_ern_2 = flk_err_ern_2 - flk_cor_ern_2,
+    flk_dif_pe_1 = flk_err_pe_1 - flk_cor_pe_1,
+    flk_dif_pe_2 = flk_err_pe_2 - flk_cor_pe_2,
+    
+    str_dif_n1_1 = str_inc_n1_1 - str_con_n1_1,
+    str_dif_n1_2 = str_inc_n1_2 - str_con_n1_2,
+    str_dif_n2_1 = str_inc_n2_1 - str_con_n2_1,
+    str_dif_n2_2 = str_inc_n2_2 - str_con_n2_2,
+    str_dif_ern_1 = str_err_ern_1 - str_cor_ern_1,
+    str_dif_ern_2 = str_err_ern_2 - str_cor_ern_2,
+    str_dif_pe_1 = str_err_pe_1 - str_cor_pe_1,
+    str_dif_pe_2 = str_err_pe_2 - str_cor_pe_2,
+    
+    gng_dif_n1_1 = gng_ng_n1_1 - gng_go_n1_1,
+    gng_dif_n1_2 = gng_ng_n1_2 - gng_go_n1_2,
+    gng_dif_n2_1 = gng_ng_n2_1 - gng_go_n2_1,
+    gng_dif_n2_2 = gng_ng_n2_2 - gng_go_n2_2,
+    gng_dif_ern_1 = gng_err_ern_1 - gng_cor_ern_1,
+    gng_dif_ern_2 = gng_err_ern_2 - gng_cor_ern_2,
+    gng_dif_pe_1 = gng_err_pe_1 - gng_cor_pe_1,
+    gng_dif_pe_2 = gng_err_pe_2 - gng_cor_pe_2
+  ) %>%
+  select(subjid, flk_dif_n1_1:gng_dif_pe_2) 
+  
+row_names <- c(
+"flk_n1_dif",
+"flk_n2_dif",
+"flk_ern_dif",
+"flk_pe_dif",
+
+"str_n1_dif",
+"str_n2_dif",
+"str_ern_dif",
+"str_pe_dif",
+
+"gng_n1_dif",
+"gng_n2_dif",
+"gng_ern_dif",
+"gng_pe_dif"
+)
+
+cor_out <- c(
+  cor(erp_sh_dif$flk_dif_n1_1,erp_sh_dif$flk_dif_n1_2),
+  cor(erp_sh_dif$flk_dif_n2_1,erp_sh_dif$flk_dif_n2_2),
+  cor(erp_sh_dif$flk_dif_ern_1,erp_sh_dif$flk_dif_ern_2),
+  cor(erp_sh_dif$flk_dif_pe_1,erp_sh_dif$flk_dif_pe_2),
+  
+  cor(erp_sh_dif$str_dif_n1_1,erp_sh_dif$str_dif_n1_2),
+  cor(erp_sh_dif$str_dif_n2_1,erp_sh_dif$str_dif_n2_2),
+  cor(erp_sh_dif$str_dif_ern_1,erp_sh_dif$str_dif_ern_2),
+  cor(erp_sh_dif$str_dif_pe_1,erp_sh_dif$str_dif_pe_2),
+  
+  cor(erp_sh_dif$gng_dif_n1_1,erp_sh_dif$gng_dif_n1_2),
+  cor(erp_sh_dif$gng_dif_n2_1,erp_sh_dif$gng_dif_n2_2),
+  cor(erp_sh_dif$gng_dif_ern_1,erp_sh_dif$gng_dif_ern_2),
+  cor(erp_sh_dif$gng_dif_pe_1,erp_sh_dif$gng_dif_pe_2)
+)
+
+
+for (ii in 1:length(row_names)) {
+  row_idx <- which(row.names(mat_dif) == row_names[ii])
+  col_idx <- which(colnames(mat_dif) == row_names[ii])
+  
+  # mat_dif[row_idx, col_idx] <- sprintf("%.2f",cor_out[ii])
+  
+  mat_dif[row_idx, col_idx] <- sub("^(-?)0+", "\\1", sprintf("%.2f",cor_out[ii]))
+}
+
+mat_dif <- apply(mat_dif, MARGIN = c(1, 2), FUN = trimws)
+mat_dif <- apply(mat_dif, 2, function(x) sub("^(-?)0+", "\\1", x))
+
+# mat_dif %>%
+#   write.csv(file = "aim1_pt_dif.csv",
+#             row.names = F)
+
+for (irow in 1:nrow(mat_dif)) {
+  for(icol in 1:ncol(mat_dif)){
+    
+      rname <- row.names(mat_dif)[irow]
+      cname <- colnames(mat_dif)[icol]
+      
+      rowstring <- strsplit(rname, "_") [[1]]
+      colstring <- strsplit(cname, "_") [[1]]
+      
+      if (rowstring[2] == colstring[2] & 
+          rowstring[1] == colstring[1]){
+        mat_dif[irow,icol] <- kableExtra::cell_spec(mat_dif[irow,icol],"html",color = "black")
+      }
+      
+      if (rowstring[2] == colstring[2] & 
+          rowstring[1] != colstring[1]){
+        mat_dif[irow,icol] <- kableExtra::cell_spec(mat_dif[irow,icol],"html",color = "red")
+      }
+      
+      if (rowstring[2] != colstring[2] & 
+          rowstring[1] == colstring[1]){
+        mat_dif[irow,icol] <- kableExtra::cell_spec(mat_dif[irow,icol],"html",color = "blue")
+      }
+      
+      if (rowstring[2] != colstring[2] & 
+          rowstring[1] != colstring[1]){
+        mat_dif[irow,icol] <- kableExtra::cell_spec(mat_dif[irow,icol],"html",color = "gray")
+      }
+    
+  }
+}
+
+task_col <- c("Flanker",rep("",3),
+              "Stroop",rep("",3),
+              "Go/NoGo",rep("",3))
+event_col <- c("ERN", "Pe", "N2", "N1",
+               "ERN", "Pe", "N2", "N1",
+               "ERN", "Pe", "N2", "N1")
+
+mat_dif <- cbind(task_col,event_col,mat_dif)
+rownames(mat_dif) <- NULL
+colnames(mat_dif) <- c("","","ERN", "Pe", "N2", "N1",
+                       "ERN", "Pe", "N2", "N1",
+                       "ERN", "Pe", "N2", "N1")
+
+mat_dif %>%
+  kableExtra::kable(.,'html',escape = FALSE) %>% 
+  kableExtra::kable_styling(
+    bootstrap_options = c("striped")) %>%
+  kableExtra::add_header_above(c("","","Flanker" = 4, "Stroop" = 4, "Go/NoGo" = 4)) %>%
+  kableExtra::collapse_rows(valign = "middle")
+
+
+
+
+
+
+
+
+mat_dif_ci <- corstars_conf(df[,c(
+  "flk_ern_dif","flk_pe_dif","flk_n2_dif","flk_n1_dif",
+  "str_ern_dif","str_pe_dif","str_n2_dif","str_n1_dif",
+  "gng_ern_dif","gng_pe_dif","gng_n2_dif","gng_n1_dif")],
+  method = "pearson",
+  removeTriangle = "upper"
+)
+
+
+mat_dif_ci <- convert_to_ci(mat_dif_ci, n = 182, level = 0.95)
+
+
+for (ii in 1:length(row_names)) {
+  row_idx <- which(row.names(mat_dif) == row_names[ii])
+  col_idx <- which(colnames(mat_dif) == row_names[ii])
+  
+  cor_ci <- psychometric::CIr(cor_out[ii], n = 182, level = .95)
+  
+  num_ll <- sub("^(-?)0+", "\\1", sprintf("%.2f",cor_ci[1]))
+  num_ul <- sub("^(-?)0+", "\\1", sprintf("%.2f",cor_ci[2]))
+  
+  ci_out <- paste0("(",num_ll,", ",num_ul,")")
+  mat_dif_ci[row_idx, col_idx] <- ci_out
+  
+  # mat_dif_ci[row_idx, col_idx] <- sprintf("(%.2f, %.2f)",
+  #                                         cor_ci[1],
+  #                                         cor_ci[2])
+}
+
+mat_dif_ci <- apply(mat_dif_ci, MARGIN = c(1, 2), FUN = trimws)
+
+# mat_dif_ci %>%
+#   write.csv(file = "aim1_ci_dif.csv",
+#             row.names = F)
+
+for (irow in 1:nrow(mat_dif_ci)) {
+  for(icol in 1:ncol(mat_dif_ci)){
+    rname <- row.names(mat_dif_ci)[irow]
+    cname <- colnames(mat_dif_ci)[icol]
+    
+    rowstring <- strsplit(rname, "_") [[1]]
+    colstring <- strsplit(cname, "_") [[1]]
+    
+    if (rowstring[2] == colstring[2] & 
+        rowstring[1] == colstring[1]){
+      mat_dif_ci[irow,icol] <- kableExtra::cell_spec(mat_dif_ci[irow,icol],"html",color = "black")
+    }
+    
+    if (rowstring[2] == colstring[2] & 
+        rowstring[1] != colstring[1]){
+      mat_dif_ci[irow,icol] <- kableExtra::cell_spec(mat_dif_ci[irow,icol],"html",color = "red")
+    }
+    
+    if (rowstring[2] != colstring[2] & 
+        rowstring[1] == colstring[1]){
+      mat_dif_ci[irow,icol] <- kableExtra::cell_spec(mat_dif_ci[irow,icol],"html",color = "blue")
+    }
+    
+    if (rowstring[2] != colstring[2] & 
+        rowstring[1] != colstring[1]){
+      mat_dif_ci[irow,icol] <- kableExtra::cell_spec(mat_dif_ci[irow,icol],"html",color = "gray")
+    }
+    
+  }
+}
+
+task_col <- c("Flanker",rep("",3),
+              "Stroop",rep("",3),
+              "Go/NoGo",rep("",3))
+event_col <- c("ERN", "Pe", "N2", "N1",
+               "ERN", "Pe", "N2", "N1",
+               "ERN", "Pe", "N2", "N1")
+
+mat_dif_ci <- cbind(task_col,event_col,mat_dif_ci)
+rownames(mat_dif_ci) <- NULL
+colnames(mat_dif_ci) <- c("","","ERN", "Pe", "N2", "N1",
+                       "ERN", "Pe", "N2", "N1",
+                       "ERN", "Pe", "N2", "N1")
+
+mat_dif_ci %>%
+  kableExtra::kable(.,'html',escape = FALSE) %>% 
+  kableExtra::kable_styling(
+    bootstrap_options = c("striped")) %>%
+  kableExtra::add_header_above(c("","","Flanker" = 4, "Stroop" = 4, "Go/NoGo" = 4)) %>%
+  kableExtra::collapse_rows(valign = "middle")
+
+
+```
+
+#### Riesel et al. Paper Findings
+
+
+|          |    |Flanker |        |  Stroop |       |  Go/NoGo |       |
+| :---     |:---|:----:  |  :---: | :----:   |  :---: |    :----:   |  :---: |
+|          |    | ERN     |   Pe   |  ERN    |   Pe  |  ERN     |   Pe  |
+| Flanker  |ERN | `r pretty_cir_rep(.76)`      |   |   |   |   |   |   |
+|          |Pe  | <span style="color: blue;">`r pretty_cir_rep(-.07)`</span/>     | `r pretty_cir_rep(.82)`     |   |   |   |   |
+| Stroop  |ERN  |   <span style="color: red;">`r pretty_cir_rep(.65)` </span>   | <span style="color: gray;">`r pretty_cir_rep(-.09)`</span>  | `r pretty_cir_rep(.69)`  |   |   |   |   |
+|          |Pe  | <span style="color: gray;">`r pretty_cir_rep(-.08)` </span>     |<span style="color: red;"> `r pretty_cir_rep(.34)` </span>   | <span style="color: blue;">`r pretty_cir_rep(.18)` </span>  | `r pretty_cir_rep(.53)`  |   |   |
+| Go/NoGo  |ERN  |  <span style="color: red;"> `r pretty_cir_rep(.65)` </span>  | <span style="color: gray;">`r pretty_cir_rep(-.26)` </span>  | <span style="color: red;">`r pretty_cir_rep(.66)`</span>  | <span style="color: gray;"> `r pretty_cir_rep(-.05)` </span> | `r pretty_cir_rep(.64)`  |   |   |
+|          |Pe  | <span style="color: gray;">`r pretty_cir_rep(-.07)`  </span>   | <span style="color: red;">`r pretty_cir_rep(.37)`</span>    | <span style="color: gray;">`r pretty_cir_rep(-.15)`</span>  | <span style="color: red;">`r pretty_cir_rep(.30)` </span> | <span style="color: blue;">`r pretty_cir_rep(.16)`</span>  | `r pretty_cir_rep(.56)`  |
+|          |    |   |        |      |       |   |       |
+
+
+## Aim 1b (Conceptual Replication)
+
+Here is the brms code for analyzing the data.
+
+```
+library(brms)
+library(cmdstanr)
+
+load("~/rrr_ern_alldata.RData")
+set_cmdstan_path("~/cmdstanr_cmdstan/cmdstan-2.29.2")
+save_path <- "~/rrr_ern_brms"
+
+n_chains <- 4
+n_cores <- 4
+n_iter <- 2000
+n_warmup <- 8000
+n_seed <- 042823
+n_threads <- 6
+
+pr_ls <- c(
+  set_prior("normal(0,3)", class = "b"),
+  set_prior("lkj(2)", class = "L"),
+  set_prior("student_t(10, 0, 3)", class = "sd")
+)
+
+erp_onlysngtrl$site <- ifelse(erp_onlysngtrl$subjid < 2000, "usf", "byu")
+
+brm_fit <- brm(bf(erp ~ -1 + as.factor(cell) + site + (-1 + as.factor(cell)|subjid),
+               sigma ~ -1 + as.factor(cell) + site + (-1 + as.factor(cell)|subjid)),
+               data = erp_onlysngtrl,
+               family = gaussian(),
+               prior = pr_ls,
+               chains = n_chains,
+               cores = n_cores,
+               iter = n_iter + n_warmup,
+               warmup = n_warmup,
+               seed = n_seed,
+               sample_prior = "yes",
+               backend = "cmdstanr",
+               threads = threading(n_threads),
+               file = file.path(save_path,"rrr_ern_mtmm_brmls"))
+
+summary(brm_fit)
+
+```
+
+
+### Error-Trial MTMM Matrix
+
+```{r aim1b_mtmm_matrix_error, echo=FALSE, warning=FALSE, results='asis', message=FALSE}
+
+brm_varcorr <- VarCorr(brm_fit)
+
+brm_cor <- brm_varcorr[["subjid"]][["cor"]]
+
+r_names <- dimnames(brm_cor)[[1]]
+m_names <- dimnames(brm_cor)[[3]]
+
+names_ordered <- c("flk_err_ern","flk_err_pe","flk_inc_n2","flk_inc_n1",
+                   "str_err_ern","str_err_pe","str_inc_n2","str_inc_n1",
+                   "gng_err_ern","gng_err_pe","gng_ng_n2","gng_ng_n1")
+
+
+brm_cor_pt <- data.frame(matrix(NA, nrow = 12, ncol = 12))
+for (ii in 1:length(r_names)) {
+  for (jj in 1:length(m_names)) { 
+    
+    row_idx <- which(names_ordered == gsub("as\\.factorcell", "", r_names[ii]))
+    col_idx <- which(names_ordered == gsub("as\\.factorcell", "", m_names[jj]))
+    
+    brm_cor_pt[row_idx,col_idx] <- brm_cor[r_names[ii],"Estimate",m_names[jj]]
+    
+  }
+}
+
+rownames(brm_cor_pt) <- names_ordered
+colnames(brm_cor_pt) <- names_ordered
+
+brm_cor_pt <- round(brm_cor_pt,2)
+brm_cor_pt <- as.data.frame(lapply(brm_cor_pt, as.character), stringsAsFactors = FALSE)
+brm_cor_pt <- apply(brm_cor_pt, 2, function(x) sub("^(-?)0+", "\\1", x))
+brm_cor_pt[upper.tri(brm_cor_pt, diag = TRUE)] <- ""
+
+# brm_cor_pt %>%
+#   write.csv("aim1b_pt_err.csv",
+#             row.names = F)
+
+for (irow in 1:nrow(brm_cor_pt)) {
+  for(icol in 1:ncol(brm_cor_pt)){
+    rname <- colnames(brm_cor_pt)[irow]
+    cname <- colnames(brm_cor_pt)[icol]
+    
+    rowstring <- strsplit(rname, "_")[[1]]
+    colstring <- strsplit(cname, "_")[[1]]
+    
+    
+    if (rowstring[3] == colstring[3] & 
+        rowstring[1] != colstring[1]){
+      brm_cor_pt[irow,icol] <- kableExtra::cell_spec(brm_cor_pt[irow,icol],"html",color = "red")
+    }
+    
+    if (rowstring[3] != colstring[3] & 
+        rowstring[1] == colstring[1]){
+      brm_cor_pt[irow,icol] <- kableExtra::cell_spec(brm_cor_pt[irow,icol],"html",color = "blue")
+    }
+    
+    if (rowstring[3] != colstring[3] & 
+        rowstring[1] != colstring[1]){
+      brm_cor_pt[irow,icol] <- kableExtra::cell_spec(brm_cor_pt[irow,icol],"html",color = "gray")
+    }
+    
+  }
+}
+
+
+
+task_col <- c("Flanker",rep("",3),
+              "Stroop",rep("",3),
+              "Go/NoGo",rep("",3))
+event_col <- c("ERN", "Pe", "N2", "N1",
+               "ERN", "Pe", "N2", "N1",
+               "ERN", "Pe", "N2", "N1")
+
+brm_cor_pt <- cbind(task_col,event_col,brm_cor_pt)
+rownames(brm_cor_pt) <- NULL
+colnames(brm_cor_pt) <- c("","","ERN", "Pe", "N2", "N1",
+                       "ERN", "Pe", "N2", "N1",
+                       "ERN", "Pe", "N2", "N1")
+
+brm_cor_pt %>%
+  kableExtra::kable(.,'html',escape = FALSE) %>% 
+  kableExtra::kable_styling(
+    bootstrap_options = c("striped")) %>%
+  kableExtra::add_header_above(c("","","Flanker" = 4, "Stroop" = 4, "Go/NoGo" = 4)) %>%
+  kableExtra::collapse_rows(valign = "middle")
+
+
+
+
+
+
+
+brm_cor_conf <- data.frame(matrix(NA, nrow = 12, ncol = 12))
+for (ii in 1:length(r_names)) {
+  for (jj in 1:length(m_names)) { 
+    
+    row_idx <- which(names_ordered == gsub("as\\.factorcell", "", r_names[ii]))
+    col_idx <- which(names_ordered == gsub("as\\.factorcell", "", m_names[jj]))
+    
+    num_ll <- sub("^(-?)0+", "\\1", sprintf("%.2f",
+                                            round(brm_cor[r_names[ii],"Q2.5",m_names[jj]],2)))
+    num_ul <- sub("^(-?)0+", "\\1", sprintf("%.2f",
+                                            round(brm_cor[r_names[ii],"Q97.5",m_names[jj]],2)))
+    
+    ci_out <- paste0("(",num_ll,", ",num_ul,")")
+    brm_cor_conf[row_idx, col_idx] <- ci_out
+    
+    # brm_cor_conf[row_idx,col_idx] <- paste0("(",
+    #                               round(brm_cor[r_names[ii],"Q2.5",m_names[jj]],2),
+    #                               ", ",
+    #                               round(brm_cor[r_names[ii],"Q97.5",m_names[jj]],2),
+    #                               ")")
+    
+  }
+}
+
+rownames(brm_cor_conf) <- names_ordered
+colnames(brm_cor_conf) <- names_ordered
+brm_cor_conf[upper.tri(brm_cor_conf, diag = TRUE)] <- ""
+
+# brm_cor_conf %>%
+#   write.csv("aim1b_ci_err.csv",
+#             row.names = F)
+
+for (irow in 1:nrow(brm_cor_conf)) {
+  for(icol in 1:ncol(brm_cor_conf)){
+    rname <- colnames(brm_cor_conf)[irow]
+    cname <- colnames(brm_cor_conf)[icol]
+    
+    rowstring <- strsplit(rname, "_")[[1]]
+    colstring <- strsplit(cname, "_")[[1]]
+    
+    
+    if (rowstring[3] == colstring[3] & 
+        rowstring[1] != colstring[1]){
+      brm_cor_conf[irow,icol] <- kableExtra::cell_spec(brm_cor_conf[irow,icol],"html",color = "red")
+    }
+    
+    if (rowstring[3] != colstring[3] & 
+        rowstring[1] == colstring[1]){
+      brm_cor_conf[irow,icol] <- kableExtra::cell_spec(brm_cor_conf[irow,icol],"html",color = "blue")
+    }
+    
+    if (rowstring[3] != colstring[3] & 
+        rowstring[1] != colstring[1]){
+      brm_cor_conf[irow,icol] <- kableExtra::cell_spec(brm_cor_conf[irow,icol],"html",color = "gray")
+    }
+    
+  }
+}
+
+
+task_col <- c("Flanker",rep("",3),
+              "Stroop",rep("",3),
+              "Go/NoGo",rep("",3))
+event_col <- c("ERN", "Pe", "N2", "N1",
+               "ERN", "Pe", "N2", "N1",
+               "ERN", "Pe", "N2", "N1")
+
+brm_cor_conf <- cbind(task_col,event_col,brm_cor_conf)
+rownames(brm_cor_conf) <- NULL
+colnames(brm_cor_conf) <- c("","","ERN", "Pe", "N2", "N1",
+                       "ERN", "Pe", "N2", "N1",
+                       "ERN", "Pe", "N2", "N1")
+
+brm_cor_conf %>%
+  kableExtra::kable(.,'html',escape = FALSE) %>% 
+  kableExtra::kable_styling(
+    bootstrap_options = c("striped")) %>%
+  kableExtra::add_header_above(c("","","Flanker" = 4, "Stroop" = 4, "Go/NoGo" = 4)) %>%
+  kableExtra::collapse_rows(valign = "middle")
+
+
+brm_vcraw <- VarCorr(brm_fit, summary = F)$subjid$cor
+
+cor_eflk_estr <- brm_vcraw[,"as.factorcellflk_err_ern","as.factorcellstr_err_ern"]
+cor_eflk_egng <- brm_vcraw[,"as.factorcellflk_err_ern","as.factorcellgng_err_ern"]
+cor_estr_egng <- brm_vcraw[,"as.factorcellstr_err_ern","as.factorcellgng_err_ern"]
+
+cor_pflk_pstr <- brm_vcraw[,"as.factorcellflk_err_pe","as.factorcellstr_err_pe"]
+cor_pflk_pgng <- brm_vcraw[,"as.factorcellflk_err_pe","as.factorcellgng_err_pe"]
+cor_pstr_pgng <- brm_vcraw[,"as.factorcellstr_err_pe","as.factorcellgng_err_pe"]
+
+cor_flk <- brm_vcraw[,"as.factorcellflk_err_ern","as.factorcellflk_err_pe"]
+cor_str <- brm_vcraw[,"as.factorcellstr_err_ern","as.factorcellstr_err_pe"]
+cor_gng <- brm_vcraw[,"as.factorcellgng_err_ern","as.factorcellgng_err_pe"]
+
+cor_flk_ern_n2 <- brm_vcraw[,"as.factorcellflk_err_ern","as.factorcellflk_inc_n2"]
+cor_str_ern_n2 <- brm_vcraw[,"as.factorcellstr_err_ern","as.factorcellstr_inc_n2"]
+cor_gng_ern_n2 <- brm_vcraw[,"as.factorcellgng_err_ern","as.factorcellgng_ng_n2"]
+
+cor_flk_pe_n2 <- brm_vcraw[,"as.factorcellflk_err_pe","as.factorcellflk_inc_n2"]
+cor_str_pe_n2 <- brm_vcraw[,"as.factorcellstr_err_pe","as.factorcellstr_inc_n2"]
+cor_gng_pe_n2 <- brm_vcraw[,"as.factorcellgng_err_pe","as.factorcellgng_ng_n2"]
+
+
+cor_flk_ern_n1 <- brm_vcraw[,"as.factorcellflk_err_ern","as.factorcellflk_inc_n1"]
+cor_str_ern_n1 <- brm_vcraw[,"as.factorcellstr_err_ern","as.factorcellstr_inc_n1"]
+cor_gng_ern_n1 <- brm_vcraw[,"as.factorcellgng_err_ern","as.factorcellgng_ng_n1"]
+cor_flk_pe_n1 <- brm_vcraw[,"as.factorcellflk_err_pe","as.factorcellflk_inc_n1"]
+cor_str_pe_n1 <- brm_vcraw[,"as.factorcellstr_err_pe","as.factorcellstr_inc_n1"]
+cor_gng_pe_n1 <- brm_vcraw[,"as.factorcellgng_err_pe","as.factorcellgng_ng_n1"]
+cor_flk_n2_n1 <- brm_vcraw[,"as.factorcellflk_inc_n2","as.factorcellflk_inc_n1"]
+cor_str_n2_n1 <- brm_vcraw[,"as.factorcellstr_inc_n2","as.factorcellstr_inc_n1"]
+cor_gng_n2_n1 <- brm_vcraw[,"as.factorcellgng_ng_n2","as.factorcellgng_ng_n1"]
+
+```
+
+#### Determination of Replication
+
+1. <span style="color: red;">Monocomponent-heterotask correlations (convergent validity)</span> should be greater than the <span style="color: blue;">heterocomponent-monotask correlations (divergent validity)</span>.
+
+|            | Simple Correlation |Flanker: ERN vs. Pe|Stroop: ERN vs. Pe | Go/NoGo: ERN vs. Pe  |        
+|:---------                   |:---------:     |:---------:     |:---------:     |:---------:     |
+|Effect |95% Credible Interval|95% Credible Interval|95% Credible Interval|95% Credible Interval|
+|ERN Flanker vs. ERN Stroop   |`r brm_cor_conf[5,3]`|`r bcor(cor_eflk_estr,cor_flk)`|`r bcor(cor_eflk_estr,cor_str)`|`r bcor(cor_eflk_estr,cor_gng)`|
+|ERN Flanker vs. ERN Go/NoGo  |`r brm_cor_conf[9,3]`|`r bcor(cor_eflk_egng,cor_flk)`|`r bcor(cor_eflk_egng,cor_str)`|`r bcor(cor_eflk_egng,cor_gng)`|
+|ERN Stroop vs. ERN Go/NoGo  |`r brm_cor_conf[9,7]`|`r bcor(cor_estr_egng,cor_flk)`|`r bcor(cor_estr_egng,cor_str)`|`r bcor(cor_estr_egng,cor_gng)`|
+|Pe Flanker vs. Pe Stroop   |`r brm_cor_conf[6,4]`|`r bcor(cor_pflk_pstr,cor_flk)`|`r bcor(cor_pflk_pstr,cor_str)`|`r bcor(cor_pflk_pstr,cor_gng)`|
+|Pe Flanker vs. Pe Go/NoGo  |`r brm_cor_conf[10,4]`|`r bcor(cor_pflk_pgng,cor_flk)`|`r bcor(cor_pflk_pgng,cor_str)`|`r bcor(cor_pflk_pgng,cor_gng)`|
+|Pe Stroop vs. Pe Go/NoGo  |`r brm_cor_conf[10,8]`|`r bcor(cor_pstr_pgng,cor_flk)`|`r bcor(cor_pstr_pgng,cor_str)`|`r bcor(cor_pstr_pgng,cor_gng)`|
+|Flanker: ERN vs. Pe   |`r brm_cor_conf[2,3]`|
+|Stroop: ERN vs. Pe  |`r brm_cor_conf[6,7]`|
+|Go/NoGo: ERN vs. Pe  |`r brm_cor_conf[10,11]`|
+
+The `Simple Correlation` column is the correlation for the `Effect` in that row. So, the first value is the correlation between ERN flanker and ERN Stroop.
+
+The remaining columns represent the contrast between the correlation in the `Effect` column and that particular column. For example, the `(.26, .71)` in the `Flanker: ERN vs. Pe` column is the contrast between the correlation for `ERN Flanker vs. ERN Stroop` and `Flanker: ERN vs. Pe`. These are the 95% credible intervals of the posterior distributions of the differences and whether they exceed zero (e.g., does the difference in the posterior distributions of two correlations exclude 0?). If they exclude 0, they are bolded. 
+
+
+  
+2.	We expect ERN and Pe recorded during the same task to be more strongly correlated than ERN with N2 or Pe with N2 recorded during the same task. 
+
+|Effect |Simple Correlation|ERN vs. N2|Pe vs. N2|
+|:---------                   |:---------:     |:---------:     |:---------:     |
+|Flanker: ERN vs. Pe|`r brm_cor_conf[2,3]`|`r bcor(cor_eflk_estr,cor_flk_ern_n2)`|`r bcor(cor_eflk_estr,cor_flk_pe_n2)`|  
+|Flanker: ERN vs. N2|`r brm_cor_conf[3,3]`| | |
+|Flanker: Pe vs. N2|`r brm_cor_conf[3,4]`| | |
+|Stroop: ERN vs. Pe|`r brm_cor_conf[6,7]`| `r bcor(cor_str,cor_str_ern_n2)`|`r bcor(cor_str,cor_str_pe_n2)`|  
+|Stroop: ERN vs. N2|`r brm_cor_conf[7,7]`| | |  
+|Stroop: Pe vs. N2|`r brm_cor_conf[7,8]`| | | 
+|Go/NoGo: ERN vs. Pe|`r brm_cor_conf[10,11]`|`r bcor(cor_gng,cor_gng_ern_n2)`|`r bcor(cor_gng,cor_gng_pe_n2)`|  
+|Go/NoGo: ERN vs. N2|`r brm_cor_conf[11,11]`| | | 
+|Go/NoGo: Pe vs. N2|`r brm_cor_conf[11,12]`| | |
+
+
+
+3. We expect ERN, N2, and Pe to be more strongly correlated with each other than with the more sensory-based stimulus-locked N1 component recorded during the same task.
+
+|Effect |ERN vs. N1|Pe vs. N1|N2 vs. N1|
+|:---------         |:---------:     |:---------:     |:---------:     |
+|Flanker: ERN vs. Pe|`r bcor(cor_flk,cor_flk_ern_n1)`|`r bcor(cor_flk,cor_flk_pe_n1)`|`r bcor(cor_flk,cor_flk_n2_n1)`|
+|Flanker: ERN vs. N2|`r bcor(cor_flk_ern_n2,cor_flk_ern_n1)`|`r bcor(cor_flk_ern_n2,cor_flk_pe_n1)`|`r bcor(cor_flk_ern_n2,cor_flk_n2_n1)`|
+|Flanker: Pe vs. N2|`r bcor(cor_flk_pe_n2,cor_flk_ern_n1)`|`r bcor(cor_flk_pe_n2,cor_flk_pe_n1)`|`r bcor(cor_flk_pe_n2,cor_flk_n2_n1)`|
+|Stroop: ERN vs. Pe|`r bcor(cor_str,cor_str_ern_n1)`|`r bcor(cor_str,cor_str_pe_n1)`|`r bcor(cor_str,cor_str_n2_n1)`|
+|Stroop: ERN vs. N2|`r bcor(cor_str_ern_n2,cor_str_ern_n1)`|`r bcor(cor_str_ern_n2,cor_str_pe_n1)`|`r bcor(cor_str_ern_n2,cor_str_n2_n1)`|
+|Stroop: Pe vs. N2|`r bcor(cor_str_pe_n2,cor_str_ern_n1)`|`r bcor(cor_str_pe_n2,cor_str_pe_n1)`|`r bcor(cor_str_pe_n2,cor_str_n2_n1)`|
+|Go/NoGo: ERN vs. Pe|`r bcor(cor_gng,cor_gng_ern_n1)`|`r bcor(cor_gng,cor_gng_pe_n1)`|`r bcor(cor_gng,cor_gng_n2_n1)`|
+|Go/NoGo: ERN vs. N2|`r bcor(cor_gng_ern_n2,cor_gng_ern_n1)`|`r bcor(cor_gng_ern_n2,cor_gng_pe_n1)`|`r bcor(cor_gng_ern_n2,cor_gng_n2_n1)`|
+|Go/NoGo: Pe vs. N2|`r bcor(cor_gng_pe_n2,cor_gng_ern_n1)`|`r bcor(cor_gng_pe_n2,cor_gng_pe_n1)`|`r bcor(cor_gng_pe_n2,cor_gng_n2_n1)`|
+
+
+## Aim 2 (Relationships with External Correlates)
+
+### ASR Summary Stats
+
+```{r summarize_ASR, echo=FALSE, warning=FALSE, results='asis', message=FALSE}
+library(papeR)
+
+knitr::kable(papeR::summarize(df[, c("asr_Intrnlzng","asr_Extrnlzng","asr_Attent","asr_Thought","asr_Intrnlzng_T","asr_Extrnlzng_T","asr_Attent_T","asr_Thought_T")],variable.labels = T,type = "numeric",quantiles = T),row.names = F) %>% kableExtra::kable_styling(bootstrap_options = c("striped"))
+
+# papeR::summarize(df[, c("pswq_total", "masq_gdm", "masq_aa", "masq_gda", "masq_ad")],variable.labels = T,type = "numeric",quantiles = T)
+
+
+```
+
+
+### MLM with ASR Scores
+
+
+```{r aim2, echo=FALSE, warning=FALSE, results='asis', message=FALSE}
+
+df_err_long <- df %>%
+  select(subjid, asr_AnxDep:asr_Attent_T, 
+         flk_ern_err, str_ern_err, gng_ern_err) %>%
+  pivot_longer(
+    cols = flk_ern_err:gng_ern_err, 
+    names_to = c("task"), 
+    names_pattern = "(.*)_ern_err",
+    values_to = "ern_err"
+    ) 
+
+df_dif_long <- df %>%
+  select(subjid, asr_AnxDep:asr_Attent_T, 
+         flk_ern_dif, str_ern_dif, gng_ern_dif) %>%
+  pivot_longer(
+    cols = flk_ern_dif:gng_ern_dif, 
+    names_to = c("task"), 
+    names_pattern = "(.*)_ern_dif",
+    values_to = "ern_dif"
+    )
+
+lm_ern <- lmer(ern_err ~ 1 + task + 
+                 task*asr_Intrnlzng_T + 
+                 task*asr_Extrnlzng_T +
+                 asr_Intrnlzng_T*asr_Extrnlzng_T + 
+                 asr_Attent_T + asr_Thought_T +
+                 (1|subjid),
+               data = df_err_long,
+               REML = FALSE)
+
+aov_lm_ern <- anova(lm_ern,
+      ddf = "Satterthwaite",
+      type = 3)
+
+rownames(aov_lm_ern)[rownames(aov_lm_ern) == "task"] <- "Task"
+rownames(aov_lm_ern)[rownames(aov_lm_ern) == "asr_Intrnlzng_T"] <- "Internalizing"
+rownames(aov_lm_ern)[rownames(aov_lm_ern) == "asr_Extrnlzng_T"] <- "Externalizing"
+rownames(aov_lm_ern)[rownames(aov_lm_ern) == "asr_Attent_T"] <- "Attention Problems"
+rownames(aov_lm_ern)[rownames(aov_lm_ern) == "asr_Thought_T"] <- "Thought Problems"
+rownames(aov_lm_ern)[rownames(aov_lm_ern) == "task:asr_Intrnlzng_T"] <- "Task x Internalizing"
+rownames(aov_lm_ern)[rownames(aov_lm_ern) == "task:asr_Extrnlzng_T"] <- "Task x Externalizing"
+rownames(aov_lm_ern)[rownames(aov_lm_ern) == "asr_Intrnlzng_T:asr_Extrnlzng_T"] <- "Internalizing x Externalizing"
+
+
+lm_dif <- lmer(ern_dif ~ 1 + task + 
+                 task*asr_Intrnlzng_T + 
+                 task*asr_Extrnlzng_T +
+                 asr_Intrnlzng_T*asr_Extrnlzng_T + 
+                 asr_Attent_T + asr_Thought_T +
+                 (1|subjid),
+               data = df_dif_long,
+               REML = FALSE)
+
+aov_lm_dif <- anova(lm_dif,
+      ddf = "Satterthwaite",
+      type = 3)
+
+rownames(aov_lm_dif)[rownames(aov_lm_dif) == "task"] <- "Task"
+rownames(aov_lm_dif)[rownames(aov_lm_dif) == "asr_Intrnlzng_T"] <- "Internalizing"
+rownames(aov_lm_dif)[rownames(aov_lm_dif) == "asr_Extrnlzng_T"] <- "Externalizing"
+rownames(aov_lm_dif)[rownames(aov_lm_dif) == "asr_Attent_T"] <- "Attention Problems"
+rownames(aov_lm_dif)[rownames(aov_lm_dif) == "asr_Thought_T"] <- "Thought Problems"
+rownames(aov_lm_dif)[rownames(aov_lm_dif) == "task:asr_Intrnlzng_T"] <- "Task x Internalizing"
+rownames(aov_lm_dif)[rownames(aov_lm_dif) == "task:asr_Extrnlzng_T"] <- "Task x Externalizing"
+rownames(aov_lm_dif)[rownames(aov_lm_dif) == "asr_Intrnlzng_T:asr_Extrnlzng_T"] <- "Internalizing x Externalizing"
+
+
+iv_labels <- c("Intercept", "Task: Go/NoGo", "Task: Stroop",
+               "Internalizing", "Externalizing", "Attention Problems",
+               "Thought Problems", 
+               "Task: Go/NoGo x Internalizing",
+               "Task: Stroop x Internalizing", 
+               "Task: Go/NoGo x Externalizing",
+               "Task: Stroop x Externalizing",
+               "Internalizing x Externalizing")
+
+
+# summ_ern <- summary(lm_ern)
+# summ_ern$coefficients %>% write.csv("lm_ern_coef.csv")
+# summ_dif <- summary(lm_dif)
+# summ_dif$coefficients %>% write.csv("lm_dif_coef.csv")
+```
+
+
+Here is the linear model for ERN. 
+
+`r tab_model(lm_ern, pred.labels = iv_labels, dv.labels = "ERN", string.ci = "95% CI")`
+
+But please note the ANOVA for the model did not yield significant effects so we shouldn't interpret any lower-order effects.
+
+`r aov_lm_ern %>% mutate_if(is.numeric, format, digits = 3) %>% kableExtra::kable() %>% kableExtra::kable_styling(bootstrap_options = c("striped"))`
+
+
+Here is the linear model for $\Delta$ERN. 
+
+`r tab_model(lm_dif, pred.labels = iv_labels, dv.labels = "ERN_Difference", string.ci = "95% CI")`
+
+Similarly, the ANOVA for the model did not yield significant effects.
+
+`r aov_lm_dif %>% mutate_if(is.numeric, format, digits = 3) %>% kableExtra::kable() %>% kableExtra::kable_styling(bootstrap_options = c("striped"))`
+
+
+In short, the symptoms did not significantly predict ERN or $\Delta$ERN. 
+
+
+## Exploratory Analyses
+
+Here is the script that was used for the exploratory analyses.
+
+```
+#which_model input defined which model to run from those described below.
+
+which_model <- commandArgs(trailingOnly = TRUE)
+which_model <- as.numeric(which_model[1])
+
+library(brms)
+library(cmdstanr)
+
+load("~/rrr_ern_alldata.RData")
+set_cmdstan_path("~/cmdstanr_cmdstan/cmdstan-2.29.2")
+save_path <- "~/rrr_ern_brms"
+
+
+n_chains <- 4
+n_cores <- 4
+n_iter <- 2000
+n_warmup <- 18000
+n_seed <- 042823
+n_threads <- 6
+
+pr_ls <- c(
+  set_prior("normal(0,3)", class = "b"),
+  set_prior("student_t(10, 0, 3)", class = "sd"),
+  set_prior("student_t(10, 0, 3)", class = "sigma")
+)
+
+erp_onlysngtrl$site <- ifelse(erp_onlysngtrl$subjid < 2000, "usf", "byu")
+
+erp_onlysngtrl <- erp_onlysngtrl[
+  erp_onlysngtrl$cell %in% c("flk_err_ern", "flk_err_pe", "gng_err_ern", "gng_err_pe", 
+                             "str_err_ern", "str_err_pe",  "flk_inc_n1", "flk_inc_n2", 
+                             "gng_ng_n1", "gng_ng_n2", 
+                             "str_inc_n1", "str_inc_n2"),
+]
+
+split_column <- strsplit(erp_onlysngtrl$cell, "_")
+erp_onlysngtrl$task <- sapply(split_column, `[`, 1)
+erp_onlysngtrl$comp <- sapply(split_column, `[`, 3)
+
+erp_onlysngtrl$task <- as.factor(erp_onlysngtrl$task)
+erp_onlysngtrl$comp <- as.factor(erp_onlysngtrl$comp)
+erp_onlysngtrl$subjid <- as.factor(erp_onlysngtrl$subjid)
+
+if (which_model == 1) {
+  
+  erp_onlysngtrl <- erp_onlysngtrl[erp_onlysngtrl$comp == "ern",]  
+  
+  brm_fit_ern <- brm(erp ~ 1 + site + 
+                       (1|subjid) + 
+                       (1|task) + 
+                       (1|task:subjid),
+                     data = erp_onlysngtrl,
+                     family = gaussian(),
+                     prior = pr_ls,
+                     chains = n_chains,
+                     cores = n_cores,
+                     iter = n_iter + n_warmup,
+                     warmup = n_warmup,
+                     seed = n_seed,
+                     sample_prior = "yes",
+                     backend = "cmdstanr",
+                     threads = threading(n_threads),
+                     adapt_delta = .99,
+                     max_treedepth = 15,
+                     file = file.path(save_path,"rrr_ern_mtmm_expl_ern"))
+  
+  summary(brm_fit_ern)
+  
+} else if (which_model == 2) {
+  
+  erp_onlysngtrl <- erp_onlysngtrl[erp_onlysngtrl$comp == "pe",]  
+  
+  brm_fit_pe <- brm(erp ~ 1 + site + 
+                      (1|subjid) + 
+                      (1|task) + 
+                      (1|task:subjid),
+                    data = erp_onlysngtrl,
+                    family = gaussian(),
+                    prior = pr_ls,
+                    chains = n_chains,
+                    cores = n_cores,
+                    iter = n_iter + n_warmup,
+                    warmup = n_warmup,
+                    seed = n_seed,
+                    sample_prior = "yes",
+                    backend = "cmdstanr",
+                    threads = threading(n_threads),
+                    adapt_delta = .99,
+                    max_treedepth = 15,
+                    file = file.path(save_path,"rrr_ern_mtmm_expl_pe"))
+  
+  summary(brm_fit_pe)
+  
+} else if (which_model == 3) {
+  
+  erp_onlysngtrl <- erp_onlysngtrl[erp_onlysngtrl$comp == "n2",]  
+  
+  brm_fit_n2 <- brm(erp ~ 1 + site + 
+                      (1|subjid) + 
+                      (1|task) + 
+                      (1|task:subjid),
+                    data = erp_onlysngtrl,
+                    family = gaussian(),
+                    prior = pr_ls,
+                    chains = n_chains,
+                    cores = n_cores,
+                    iter = n_iter + n_warmup,
+                    warmup = n_warmup,
+                    seed = n_seed,
+                    sample_prior = "yes",
+                    backend = "cmdstanr",
+                    threads = threading(n_threads),
+                    adapt_delta = .99,
+                    max_treedepth = 15,
+                    file = file.path(save_path,"rrr_ern_mtmm_expl_n2"))
+  
+  summary(brm_fit_n2)
+  
+} else if (which_model == 4) {
+  
+  erp_onlysngtrl <- erp_onlysngtrl[erp_onlysngtrl$comp == "n1",]  
+  
+  brm_fit_n1 <- brm(erp ~ 1 + site + 
+                      (1|subjid) + 
+                      (1|task) + 
+                      (1|task:subjid),
+                    data = erp_onlysngtrl,
+                    family = gaussian(),
+                    prior = pr_ls,
+                    chains = n_chains,
+                    cores = n_cores,
+                    iter = n_iter + n_warmup,
+                    warmup = n_warmup,
+                    seed = n_seed,
+                    sample_prior = "yes",
+                    backend = "cmdstanr",
+                    threads = threading(n_threads),
+                    adapt_delta = .99,
+                    max_treedepth = 15,
+                    file = file.path(save_path,"rrr_ern_mtmm_expl_n1"))
+  
+  summary(brm_fit_n1)
+  
+}
+
+```
+
+```{r expl, echo=FALSE, warning=FALSE, results='asis', message=FALSE}
+library(performance)
+
+brm_ern <- readRDS(here::here("rrr_ern_mtmm_expl_ern.rds"))
+brm_pe <- readRDS(here::here("rrr_ern_mtmm_expl_pe.rds"))
+brm_n2 <- readRDS(here::here("rrr_ern_mtmm_expl_n2.rds"))
+brm_n1 <- readRDS(here::here("rrr_ern_mtmm_expl_n1.rds"))
+
+#having this dataset loaded messes up the icc
+rm("erp_onlysngtrl")
+
+ern_icc <- icc(brm_ern, by_group = T)
+pe_icc <- icc(brm_pe, by_group = T)
+n2_icc <- icc(brm_n2, by_group = T)
+n1_icc <- icc(brm_n1, by_group = T)
+
+```
+
+### ERN
+
+`r kableExtra::kable(ern_icc) %>% kableExtra::kable_styling(bootstrap_options = c("striped"))`
+
+### Pe
+
+`r kableExtra::kable(pe_icc) %>% kableExtra::kable_styling(bootstrap_options = c("striped"))`
+
+### N2
+
+`r kableExtra::kable(n2_icc) %>% kableExtra::kable_styling(bootstrap_options = c("striped"))`
+
+### N1
+
+`r kableExtra::kable(n1_icc) %>% kableExtra::kable_styling(bootstrap_options = c("striped"))`
+
+
+# loaded libraries with versions
+
+```{r sessinfo}
+sessionInfo()
+```
