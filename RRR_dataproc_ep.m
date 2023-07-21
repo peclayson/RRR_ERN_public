@@ -164,6 +164,26 @@ end
 %start a timer
 t1 = tic;
 
+%create a log file where 'bad filenames' can be written for double checking
+% Open file for writing
+% Get current date and time
+currentDateTime = datetime('now');
+
+% Format date and time as a string
+dateString = datestr(currentDateTime, 'yyyy-mm-dd_HH-MM-SS');
+
+% Create filename using date string
+fileName = ['badfiles_' dateString '.txt'];
+
+% Open file for writing
+fileID = fopen(fullfile(dirsave,fileName), 'w');
+
+% Write some text to the file
+fprintf(fileID, 'Log of bad files.\n');
+
+% Close the file
+fclose(fileID);
+
 if useParallel == 1
     
     %use all physical cores for data processing
@@ -177,8 +197,26 @@ if useParallel == 1
         %indicate which participant is being processed and the progress
         fprintf('\n******\nProcessing participant %s\n******\n',filenames{ii});
         
-        %process the data file
-        prepare_eeg(filenames{ii}, dirwork, dirsave);
+        try
+            
+            %process the data file
+            prepare_eeg(filenames{ii}, dirwork, dirsave);
+            
+        catch
+            
+            % Handle any exceptions that occurred
+            fprintf('\n******\nAn error occurred for %s\n******\n',filenames{ii});
+            
+            % Open file for appending
+            fileID = fopen(fullfile(dirsave,fileName), 'a');
+            
+            % Append bad file name
+            fprintf(fileID, '%s\n', filenames{ii});
+            
+            % Close file
+            fclose(fileID);
+            
+        end
         
     end
     
@@ -193,8 +231,22 @@ elseif useParallel == 0
         %indicate which participant is being processed and the progress
         fprintf('\n******\nProcessing participant %s\n******\n',filenames{ii});
         
-        %process the data file
-        prepare_eeg(filenames{ii}, dirwork, dirsave);
+        try
+            %process the data file
+            prepare_eeg(filenames{ii}, dirwork, dirsave);
+        catch
+            % Handle any exceptions that occurred
+            fprintf('\n******\nAn error occurred for %s\n******\n',filenames{ii});
+            
+            % Open file for appending
+            fileID = fopen(fullfile(dirsave,fileName), 'a');
+            
+            % Append bad file name
+            fprintf(fileID, '%s\n', filenames{ii});
+            
+            % Close file
+            fclose(fileID);
+        end
         
         %just keeping track of the participant being processed
         fprintf('Finished participant %d of %d\n', ii, length(filenames));
@@ -220,13 +272,13 @@ function prepare_eeg(subject, wrkdir, savefileshere)
 name_split = strsplit(savename,'_');
 
 %subject id
-subjid = name_split{1};
+subjid = name_split{2};
 
 %task for recording
-task = name_split{2};
+task = name_split{3};
 
 %order of presentation
-torder = name_split{3};
+torder = name_split{4};
 
 %load .mff file
 EEG = pop_mffimport(fullfile(wrkdir,subject), {'code'});
@@ -244,16 +296,17 @@ eplabdir = fileparts(which('ep.m'));
 EEG = pop_chanedit(EEG, 'lookup',...
     fullfile(eplabdir,...
     'electrodes',...
+    'old EGI Hydrocel',...
     'GSN-Hydrocel-129.ced'));
 
 
 %Use ERPLab for filtering
 % IIR Butterworth
 % 4th order (24 dB/oct)
-% .01 to 30 Hz half-amplitude cutoffs
+% .10 to 30 Hz half-amplitude cutoffs
 % ignore online reference (129)
 EEG = pop_basicfilter(EEG, 1:128,...
-    'Cutoff', [.01 30],...
+    'Cutoff', [.10 30],...
     'Design', 'butter',...
     'Filter', 'bandpass',...
     'Order', 4,...
@@ -264,6 +317,8 @@ nevents = size(EEG.event,2);
 
 
 if strcmpi(task,'flanker') %epoch flanker data
+    
+    task_out = 'flk';
     
     %define congruent/incongruent event keys
     cong_keys = {'>>>>>' '<<<<<'};
@@ -282,9 +337,10 @@ if strcmpi(task,'flanker') %epoch flanker data
                     case '1'
                         EEG.event(ii).type = 'cor'; %correct
                 end
+                EEG.event(ii).mffkeys = EEG.event(ii+1).mffkeysbackup;
             end
-        
-        %stimulus-locked    
+            
+            %stimulus-locked
         elseif strcmp(EEG.event(ii).code,'Stm+') && (ii+3 <= nevents) && ...
                 (str2double(EEG.event(ii+3).mffkey_rtim) >= 100) && ...
                 (str2double(EEG.event(ii+3).mffkey_rtim) < 700)
@@ -296,6 +352,7 @@ if strcmpi(task,'flanker') %epoch flanker data
                     case inco_keys
                         EEG.event(ii).type = 'inc'; %incongruent
                 end
+                EEG.event(ii).mffkeys = EEG.event(ii+3).mffkeysbackup;
             end
         end
     end
@@ -328,6 +385,8 @@ if strcmpi(task,'flanker') %epoch flanker data
     
 elseif strcmpi(task,'gng') %epoch go/nogo data
     
+    task_out = 'gng';
+    
     %define congruent/incongruent event keys
     go_keys = {'Target'};
     nogo_keys = {'Tilt_Left' 'Tilt_Right'};
@@ -344,6 +403,9 @@ elseif strcmpi(task,'gng') %epoch go/nogo data
                     case '1'
                         EEG.event(ii).type = 'cor'; %correct
                 end
+                
+                EEG.event(ii).mffkeys = EEG.event(ii+1).mffkeysbackup;
+                
             end
             
             
@@ -354,14 +416,18 @@ elseif strcmpi(task,'gng') %epoch go/nogo data
                     if (str2double(EEG.event(ii+3).mffkey_rtim) >= 100) && ...
                             (str2double(EEG.event(ii+3).mffkey_rtim) < 700)
                         EEG.event(ii).type = 'go'; %go trial
+                        EEG.event(ii).mffkeys = EEG.event(ii+3).mffkeysbackup;
                     end
                 end
                 
+              
             elseif strcmp(EEG.event(ii+2).code,'TRSP') && ...
                     strcmp(EEG.event(ii+2).mffkey_eval,'1') && ...
                     any(strcmp(EEG.event(ii+2).mffkey_Tilt,nogo_keys))
                 
                 EEG.event(ii).type = 'ng'; %go trial
+                EEG.event(ii).mffkeys = EEG.event(ii+2).mffkeysbackup;
+                
             end
         end
         
@@ -394,6 +460,7 @@ elseif strcmpi(task,'gng') %epoch go/nogo data
     
 elseif strcmpi(task,'stroop') %epoch stroop data
     
+    task_out = 'str';
     
     for ii = 1:nevents
         if strcmp(EEG.event(ii).code,'resp') && (ii+1 <= nevents) && ...
@@ -406,6 +473,9 @@ elseif strcmpi(task,'stroop') %epoch stroop data
                     case '1'
                         EEG.event(ii).type = 'cor'; %correct
                 end
+                
+                EEG.event(ii).mffkeys = EEG.event(ii+1).mffkeysbackup;
+                
             end
             
         elseif strcmp(EEG.event(ii).code,'Stm+') && (ii+3 <= nevents) && ...
@@ -430,6 +500,8 @@ elseif strcmpi(task,'stroop') %epoch stroop data
                             EEG.event(ii).type = 'inc'; %incongruent trial
                         end
                 end
+                
+                EEG.event(ii).mffkeys = EEG.event(ii+3).mffkeysbackup;
                 
             end
         end
@@ -464,11 +536,11 @@ elseif strcmpi(task,'stroop') %epoch stroop data
 end
 
 %Save as .set file
-pop_saveset(EEG_resp, 'filename',[subjid '_' task '_' torder '_resp.set'],...
+pop_saveset(EEG_resp, 'filename',[subjid '_' task_out '_' torder '_resp.set'],...
     'filepath', savefileshere);
 
 %Save as .set file
-pop_saveset(EEG_stim, 'filename',[subjid '_' task '_' torder '_stim.set'],...
+pop_saveset(EEG_stim, 'filename',[subjid '_' task_out '_' torder '_stim.set'],...
     'filepath', savefileshere);
 
 
